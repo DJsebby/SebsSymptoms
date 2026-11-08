@@ -1,0 +1,9 @@
+# Never commit personal health data. Backups, exports and decrypted folders stay off GitHub.
+*.ssbk
+*.csv
+*.json.bak
+backup*/
+decrypted*/
+SebsSymptoms-*/
+.DS_Store
+node_modules/
