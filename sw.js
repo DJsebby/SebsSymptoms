@@ -1,6 +1,6 @@
 // Offline support: caches the app's own files so it opens with no internet.
 // Bump VERSION whenever any app file changes, so phones pick up the update.
-const VERSION = 'v1.2.0';
+const VERSION = 'v1.3.0';
 const CACHE = `sebssymptoms-${VERSION}`;
 const ASSETS = [
   './',

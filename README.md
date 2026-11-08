@@ -7,7 +7,8 @@ A private, offline diary for tracking eczema, sinus symptoms and their possible 
 - **Food, activity, meds and creams.** Things you've logged before show up as one-tap suggestions. BJJ, Gym and Work (bartending) are always one tap away.
 - **Products.** Add detergents, soaps and creams once, with a photo of the ingredients label. They count for every day until you mark them stopped.
 - **Photos of symptoms.** Shrunk to save space, with location data removed. They stay inside the app and don't go to your camera roll or iCloud Photos.
-- **Trends.** A colour grid of every area, symptom, sleep, stress and humidity over 14, 30 or 90 days, plus POEM history.
+- **Trends.** A colour grid of every area, symptom, sleep, stress and humidity over 14, 30 or 90 days, plus POEM history. Inside each day's square, time runs from midnight (left) to midnight (right), and the colour blends between that day's check-ins, so a flare at 5 pm that settled by 9 pm shows as a dark patch fading back to pale.
+- **Day details.** Tap any square to see that day as a chart of score against time, a table of every check-in, plus the weather, food, activities and products for that day.
 - **Weather (optional).** Daily temperature, humidity, rain, UV and air quality (PM2.5) from Open-Meteo, for the past 2 months onwards.
 - **Specialist report.** One document for appointments covering a summary, most affected areas, the day-by-day grid, POEM, products with label photos, meds, activities, foods, weather, notes and photos. Print it, save it as a PDF, or share it as a file.
 - **Backups to Google Drive.** Two taps a day saves a normal .zip file containing spreadsheets and photos.
@@ -84,7 +85,7 @@ python3 -m http.server 8000   # then open http://localhost:8000
 | `js/poem.js` | POEM questions and severity bands |
 | `js/weather.js` | Open-Meteo weather, air quality and town search |
 | `js/report.js`, `css/report.css` | The specialist report |
-| `js/db.js` | IndexedDB storage |
+| `js/db.js` | IndexedDB storage. Reconnects automatically when iOS closes the connection in the background; related changes are saved together or not at all |
 | `js/images.js` | Photo compression and metadata stripping |
 | `sw.js` | Offline caching |
 

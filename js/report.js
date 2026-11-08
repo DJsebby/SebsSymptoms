@@ -4,7 +4,7 @@
 
 import { h, addDays, parseDay, dayKey } from './ui.js';
 import { REGIONS, GENERAL, FACTORS } from './body.js';
-import { dailyScores, heatRows, heatGrid, heatLegend } from './heat.js';
+import { dailyScores, checkinsByDay, heatRows, heatGrid, heatLegend } from './heat.js';
 import { poemBand, POEM_CREDIT } from './poem.js';
 
 const fmt = d => parseDay(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
@@ -45,6 +45,7 @@ export function buildReport({ entries, products, weather, from, to, name, photoI
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
   const E = entries.filter(e => e.day >= from && e.day <= to).sort(byTime);
   const daily = dailyScores(E);
+  const checkins = checkinsByDay(E);
   const checkDays = days.filter(d => daily.has(d));
   const worstOf = d => Math.max(0, ...Object.entries(daily.get(d)).filter(([k]) => !k.startsWith('f:')).map(([, v]) => v));
   const worsts = checkDays.map(worstOf);
@@ -124,8 +125,8 @@ export function buildReport({ entries, products, weather, from, to, name, photoI
       h('p', { class: 'note' }, 'Averages are over check-in days. Sleep and stress only count days they were recorded.')),
 
     section('Day by day',
-      h('p', { class: 'note' }, 'Each square is the worst score recorded that day.' + (heatDays.length < days.length ? ` Starts at the first check-in (${fmt(heatDays[0])}).` : '')),
-      chunks.map(c => h('div', { class: 'rpt-heat' }, heatGrid({ days: c, daily, weather, rows, prefix: 'rh', labelW: 74, labelEvery: 7 }))),
+      h('p', { class: 'note' }, 'Each square is one day. Inside a square, time runs from midnight (left) to midnight (right) and the colour blends between that day\'s check-ins, so changes during the day are visible. "Overall" is the highest score in each check-in.' + (heatDays.length < days.length ? ` Starts at the first check-in (${fmt(heatDays[0])}).` : '')),
+      chunks.map(c => h('div', { class: 'rpt-heat' }, heatGrid({ days: c, checkins, weather, rows, prefix: 'rh', labelW: 74, labelEvery: 7 }))),
       heatLegend(hasWeather)),
 
     poems.length ? section('Weekly eczema score (POEM)',

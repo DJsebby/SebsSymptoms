@@ -136,7 +136,10 @@ export const shortDate = key => parseDay(key).toLocaleDateString(undefined, { da
 export function whenText(ms) {
   if (!ms) return 'never';
   const d = new Date(ms);
-  return `${prettyDay(dayKey(d))} ${timeKey(d)}`;
+  const key = dayKey(d);
+  // Weekday names are only clear within the last week; older than that, show the date.
+  const label = addDays(dayKey(), -6) <= key ? prettyDay(key) : shortDate(key);
+  return `${label} ${timeKey(d)}`;
 }
 
 export const uid = () => crypto.randomUUID();

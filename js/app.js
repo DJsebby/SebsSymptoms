@@ -1,18 +1,19 @@
 // Seb's Symptoms — main screens. All data stays in this phone's storage (IndexedDB).
-// The only way data leaves is an encrypted backup file you choose to share.
+// Data only leaves when you choose to (a backup or report file). With weather on, Open-Meteo
+// receives a rough location only.
 
-import { h, icon, openSheet, confirmSheet, toast, dayKey, timeKey, addDays, daysBetween, prettyDay, prettyDate, shortDate, whenText, uid, fmtBytes } from './ui.js';
+import { h, appendKids, icon, openSheet, confirmSheet, toast, dayKey, timeKey, addDays, daysBetween, prettyDay, prettyDate, shortDate, whenText, uid, fmtBytes } from './ui.js';
 import * as db from './db.js';
 import { REGIONS, GENERAL, FACTORS, labelFor, shortLabel, bodyMap } from './body.js';
 import { compressImage } from './images.js';
-import { dailyScores, heatRows, heatGrid, heatLegend, describeCell, weatherText } from './heat.js';
+import { checkinsByDay, checkinValue, heatRows, heatGrid, heatLegend, dayChart, weatherText } from './heat.js';
 import { POEM_QUESTIONS, POEM_OPTIONS, POEM_CREDIT, poemBand, poemSev } from './poem.js';
 import { fetchWeatherDays, searchPlaces, roundCoord } from './weather.js';
 import { buildReport, reportFile } from './report.js';
 import { buildBackup, parseBackupZip } from './backup.js';
 import { isLegacyBackup, openLegacyBackup } from './legacy-backup.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 const state = {
   tab: 'today',
@@ -22,7 +23,7 @@ const state = {
   products: [],
   settings: new Map(),
   weather: new Map(),
-  trendRange: 30,
+  trendRange: 14,
   photoFilter: 'all',
   updateWorker: null,
 };
@@ -38,35 +39,43 @@ async function saveSetting(key, value) {
   state.settings.set(key, value);
 }
 
-async function saveEntry(entry) {
-  entry.updated = Date.now();
-  await db.put('entries', entry);
-  const i = state.entries.findIndex(e => e.id === entry.id);
-  if (i >= 0) state.entries[i] = entry; else state.entries.push(entry);
+// Saves work on a copy and only update what's on screen once the data is safely
+// stored, so a failed save can never leave the screen showing unsaved changes.
+function upsert(list, item) {
+  const i = list.findIndex(x => x.id === item.id);
+  if (i >= 0) list[i] = item; else list.push(item);
+}
+
+// extraOps: other changes that must be stored together with the entry (e.g. its photo).
+async function saveEntry(entry, extraOps = []) {
+  const saved = { ...entry, updated: Date.now() };
+  await db.write([...extraOps, ['put', 'entries', saved]]);
+  upsert(state.entries, saved);
+  return saved;
 }
 
 async function removeEntry(entry) {
-  await db.del('entries', entry.id);
-  if (entry.photoId) await db.del('photos', entry.photoId);
+  await db.write([['delete', 'entries', entry.id], ...(entry.photoId ? [['delete', 'photos', entry.photoId]] : [])]);
   state.entries = state.entries.filter(e => e.id !== entry.id);
 }
 
-async function saveProduct(p) {
-  p.updated = Date.now();
-  await db.put('products', p);
-  const i = state.products.findIndex(x => x.id === p.id);
-  if (i >= 0) state.products[i] = p; else state.products.push(p);
+async function saveProduct(product, extraOps = []) {
+  const saved = { ...product, updated: Date.now() };
+  await db.write([...extraOps, ['put', 'products', saved]]);
+  upsert(state.products, saved);
+  return saved;
 }
 
 async function removeProduct(p) {
-  await db.del('products', p.id);
-  if (p.photoId) await db.del('photos', p.photoId);
+  await db.write([['delete', 'products', p.id], ...(p.photoId ? [['delete', 'photos', p.photoId]] : [])]);
   state.products = state.products.filter(x => x.id !== p.id);
 }
 
 const byTime = (a, b) => (a.day + a.time).localeCompare(b.day + b.time);
 const entriesOn = day => state.entries.filter(e => e.day === day).sort(byTime);
-const lastCheckin = () => state.entries.filter(e => e.type === 'symptoms').sort(byTime).at(-1);
+const lastCheckinBefore = entry => state.entries
+  .filter(e => e.type === 'symptoms' && e.id !== entry.id && e.day + e.time <= entry.day + entry.time)
+  .sort(byTime).at(-1);
 
 const CATEGORIES = ['Laundry detergent', 'Fabric softener', 'Body wash / soap', 'Hand soap', 'Shampoo', 'Conditioner',
   'Moisturiser', 'Sunscreen', 'Deodorant', 'Dish soap', 'Cleaning product', 'Other'];
@@ -104,7 +113,8 @@ function thumb(id, cls = 'thumb') {
 function pickFile(accept = 'image/*') {
   return new Promise(resolve => {
     const input = h('input', { type: 'file', accept, class: 'visually-hidden', tabindex: '-1' });
-    const done = file => { input.remove(); resolve(file); };
+    let settled = false;
+    const done = file => { if (settled) return; settled = true; input.remove(); resolve(file); };
     input.addEventListener('change', () => done(input.files[0] || null), { once: true });
     input.addEventListener('cancel', () => done(null), { once: true });
     document.body.append(input);
@@ -268,7 +278,7 @@ function field(label, control, hint) {
 function timeInput(value) { return h('input', { type: 'time', value, required: true }); }
 
 function addFooter(sheet, { onSave, onDelete, saveLabel = 'Save' }) {
-  if (onDelete) sheet.footer.append(h('button', { class: 'btn danger-ghost', onclick: onDelete }, 'Delete'));
+  if (onDelete) sheet.footer.append(h('button', { class: 'btn danger-ghost', onclick: guard(onDelete) }, 'Delete'));
   sheet.footer.append(h('button', { class: 'btn primary grow', onclick: guard(onSave) }, saveLabel));
 }
 
@@ -297,7 +307,7 @@ function openCheckin(entry, isNew) {
   const factors = { ...(entry.factors || {}) }; // sleep & stress: never copied from the last check-in
   let copiedFrom = null;
   if (isNew) {
-    const last = lastCheckin();
+    const last = lastCheckinBefore(entry);
     if (last) { areas = { ...(last.areas || {}) }; general = { ...(last.general || {}) }; copiedFrom = last; }
   }
   const sheet = openSheet(isNew ? 'Symptom check-in' : 'Edit check-in', { full: true });
@@ -356,8 +366,7 @@ function openCheckin(entry, isNew) {
 
   addFooter(sheet, {
     onSave: async () => {
-      Object.assign(entry, { areas, general, factors, note: note.value.trim(), time: time.value || entry.time });
-      await saveEntry(entry);
+      await saveEntry({ ...entry, areas, general, factors, note: note.value.trim(), time: time.value || entry.time });
       sheet.close(); render(); toast('Check-in saved');
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'check-in', () => removeEntry(entry)),
@@ -452,9 +461,7 @@ function openItems(entry, isNew) {
     onSave: async () => {
       if (input.value.trim()) addItem(input.value);
       if (!items.length) { toast('Add at least one item first'); return; }
-      Object.assign(entry, { items, note: note.value.trim(), time: time.value || entry.time });
-      if (type === 'food') entry.meal = meal;
-      await saveEntry(entry);
+      await saveEntry({ ...entry, items, note: note.value.trim(), time: time.value || entry.time, ...(type === 'food' ? { meal } : {}) });
       sheet.close(); render(); toast('Saved');
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'entry', () => removeEntry(entry)),
@@ -471,8 +478,7 @@ function openNote(entry, isNew) {
   addFooter(sheet, {
     onSave: async () => {
       if (!text.value.trim()) { toast('Write something first'); return; }
-      Object.assign(entry, { text: text.value.trim(), time: time.value || entry.time });
-      await saveEntry(entry);
+      await saveEntry({ ...entry, text: text.value.trim(), time: time.value || entry.time });
       sheet.close(); render(); toast('Saved');
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'note', () => removeEntry(entry)),
@@ -518,13 +524,13 @@ function openPhoto(entry, isNew, img) {
 
   addFooter(sheet, {
     onSave: async () => {
-      if (isNew) {
-        const photoId = uid();
-        await db.put('photos', { id: photoId, ...img, created: Date.now() });
-        entry.photoId = photoId;
+      const next = { ...entry, area: area || null, note: note.value.trim(), time: time.value || entry.time };
+      const extra = [];
+      if (isNew) { // the photo and its diary entry are stored together, or not at all
+        next.photoId = uid();
+        extra.push(['put', 'photos', { id: next.photoId, ...img, created: Date.now() }]);
       }
-      Object.assign(entry, { area: area || null, note: note.value.trim(), time: time.value || entry.time });
-      await saveEntry(entry);
+      await saveEntry(next, extra);
       sheet.close(); render(); toast('Photo saved');
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'photo', () => removeEntry(entry)),
@@ -554,9 +560,9 @@ function viewPhotos() {
 
 function viewProducts() {
   const today = dayKey();
-  const current = productsOn(today);
-  const past = state.products.filter(p => p.end && p.end < today).sort((a, b) => b.end.localeCompare(a.end));
-  const future = state.products.filter(p => p.start > today);
+  const current = state.products.filter(p => !p.end && p.start <= today).sort(byCategory);
+  const past = state.products.filter(p => p.end).sort((a, b) => b.end.localeCompare(a.end));
+  const future = state.products.filter(p => !p.end && p.start > today).sort(byCategory);
   const card = p => h('button', { class: 'product', onclick: () => openProduct(p, false) },
     p.photoId ? thumb(p.photoId, 'product-thumb') : h('span', { class: 'product-thumb empty-thumb' }, icon('bottle')),
     h('span', { class: 'entry-main' },
@@ -587,16 +593,22 @@ function openProduct(p, isNew) {
 
   const pic = h('img', { class: 'photo-full' + (product.photoId ? '' : ' hidden'), alt: 'Ingredients label' });
   if (product.photoId) photoURL(product.photoId, true).then(u => { if (u) { url = u; pic.src = u; } });
-  const photoBtn = h('button', { class: 'btn wide', onclick: guard(async () => {
+  const photoBtn = h('button', { class: 'btn wide', onclick: async () => {
     const file = await pickFile();
     if (!file) return;
-    newPhoto = await compressImage(file, 2200, 0.85); // larger so small print stays readable
+    try {
+      newPhoto = await compressImage(file, 2200, 0.85); // larger so small print stays readable
+    } catch (err) {
+      console.error(err);
+      toast("Couldn't read that photo. Try another.", 3500);
+      return;
+    }
     if (url) URL.revokeObjectURL(url);
     url = URL.createObjectURL(new Blob([newPhoto.data], { type: newPhoto.type }));
     pic.src = url;
     pic.classList.remove('hidden');
     photoBtn.lastChild.textContent = 'Retake label photo';
-  }) }, icon('camera'), h('span', {}, product.photoId ? 'Retake label photo' : 'Photo of ingredients label'));
+  } }, icon('camera'), h('span', {}, product.photoId ? 'Retake label photo' : 'Photo of ingredients label'));
 
   sheet.add(
     field('Type', category),
@@ -611,9 +623,8 @@ function openProduct(p, isNew) {
 
   if (!isNew && !product.end) {
     sheet.footer.append(h('button', { class: 'btn', onclick: guard(async () => {
-      product.end = dayKey();
-      await saveProduct(product);
-      sheet.close(); render(); toast(`Marked as stopped today`);
+      await saveProduct({ ...product, end: dayKey() });
+      sheet.close(); render(); toast('Moved to "Used before". Today still counts as a day you used it.');
     }) }, 'Stopped'));
   }
   addFooter(sheet, {
@@ -621,15 +632,15 @@ function openProduct(p, isNew) {
       if (!name.value.trim()) { toast('Give it a name first'); return; }
       if (!start.value) { toast('Pick a start date'); return; }
       if (end.value && end.value < start.value) { toast('Stop date is before the start date'); return; }
-      if (newPhoto) {
-        const photoId = uid();
-        await db.put('photos', { id: photoId, ...newPhoto, created: Date.now() });
-        if (product.photoId) await db.del('photos', product.photoId);
-        thumbURLs.delete(product.photoId);
-        product.photoId = photoId;
+      const next = { ...product, category: category.value, name: name.value.trim(), start: start.value, end: end.value || null, ingredients: ingredients.value.trim(), note: note.value.trim() };
+      const extra = [];
+      if (newPhoto) { // new label photo, product and removal of the old photo happen together
+        next.photoId = uid();
+        extra.push(['put', 'photos', { id: next.photoId, ...newPhoto, created: Date.now() }]);
+        if (product.photoId) extra.push(['delete', 'photos', product.photoId]);
       }
-      Object.assign(product, { category: category.value, name: name.value.trim(), start: start.value, end: end.value || null, ingredients: ingredients.value.trim(), note: note.value.trim() });
-      await saveProduct(product);
+      await saveProduct(next, extra);
+      if (newPhoto && product.photoId) { URL.revokeObjectURL(thumbURLs.get(product.photoId) || ''); thumbURLs.delete(product.photoId); }
       sheet.close(); render(); toast('Product saved');
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'product', () => removeProduct(product)),
@@ -642,22 +653,22 @@ function viewTrends() {
   const range = state.trendRange;
   const today = dayKey();
   const days = Array.from({ length: range }, (_, i) => addDays(today, i - range + 1));
-  const daily = dailyScores(state.entries);
+  const checkins = checkinsByDay(state.entries);
   const hasWeather = days.some(d => state.weather.has(d));
   const rows = heatRows(hasWeather);
-  const logged = days.filter(d => daily.has(d)).length;
+  const logged = days.filter(d => checkins.has(d)).length;
 
+  // Squares are at least 12px wide so the colour changes within a day stay visible;
+  // longer ranges scroll sideways (opening on the most recent days).
   const labelW = 64, gap = 2;
   const avail = Math.min(window.innerWidth, 640) - 32 - 26 - labelW; // page + card padding
-  const cell = Math.max(7, Math.floor((avail - gap * range) / range));
-  const detail = h('p', { class: 'heat-detail' }, 'Tap a square to see the details.');
-  const grid = heatGrid({ days, daily, weather: state.weather, rows, cell, labelW });
+  const cell = Math.max(12, Math.floor((avail - gap * range) / range));
+  const grid = heatGrid({ days, checkins, weather: state.weather, rows, cell, labelW });
   grid.addEventListener('click', e => {
     const c = e.target.closest('.heat-cell');
     if (!c) return;
-    grid.querySelector('.heat-cell.sel')?.classList.remove('sel');
-    c.classList.add('sel');
-    detail.textContent = describeCell(c.dataset.day, rows[+c.dataset.row], daily, state.weather);
+    const row = rows[+c.dataset.row];
+    openDayDetail(c.dataset.day, row.weather ? 'worst' : row.key);
   });
   const scroller = h('div', { class: 'heat-scroll' }, grid);
   requestAnimationFrame(() => { scroller.scrollLeft = scroller.scrollWidth; });
@@ -677,14 +688,78 @@ function viewTrends() {
   return h('div', { class: 'view' },
     h('div', { class: 'title-row' }, h('h1', {}, 'Trends'), h('button', { class: 'btn primary small', onclick: openReport }, icon('doc'), 'Report')),
     h('div', { class: 'seg' }, rangeBtn(14), rangeBtn(30), rangeBtn(90)),
-    h('p', { class: 'small muted' }, `Checked in on ${logged} of the last ${range} days. Each square is the worst score that day.`),
-    h('div', { class: 'card heat-card' }, scroller, detail, heatLegend(hasWeather)),
+    h('p', { class: 'small muted' }, `Checked in on ${logged} of the last ${range} days.`),
+    h('div', { class: 'card heat-card' },
+      scroller,
+      h('p', { class: 'heat-hint' }, 'Each square is one day. Inside it, time runs from midnight (left) to midnight (right), so the colour shows how the day changed. Tap a square for details.'),
+      heatLegend(hasWeather)),
     h('h3', { class: 'section' }, 'Weekly eczema score (POEM)'),
     poems.length
       ? h('div', { class: 'card poem-list' }, poems.map(poemRow))
       : h('p', { class: 'empty' }, 'No weekly scores yet. It takes about a minute.'),
     h('button', { class: 'btn wide', onclick: startPoem }, icon('clipboard'), "Do this week's score"),
     h('p', { class: 'small muted' }, "Pattern-finding (which foods, products or weather line up with flare-ups) comes in a later version, once there's enough data."));
+}
+
+// ---------- one day in detail (opened from a Trends square) ----------
+
+function dayTable(list, rows) {
+  const mini = v => (v == null ? h('span', { class: 'mini none' }, '–') : h('span', { class: 'mini ' + (v ? 'sev-' + v : 'zero') }, String(v)));
+  const head = h('thead', {}, h('tr', {}, h('th', {}, ''), list.map(c => h('th', {}, c.time))));
+  const body = h('tbody', {}, rows.map(r =>
+    h('tr', {}, h('th', {}, r.label), list.map(c => h('td', {}, mini(checkinValue(r, c)))))));
+  return h('div', { class: 'day-table-wrap' }, h('table', { class: 'day-table' }, head, body));
+}
+
+function openDayDetail(day, focusKey = 'worst') {
+  let current = day;
+  let key = focusKey;
+  const sheet = openSheet('Day details', { full: true });
+  const content = h('div');
+  sheet.add(content);
+  sheet.footer.append(h('button', { class: 'btn grow', onclick: () => { sheet.close(); state.day = current; go('today'); } }, 'Open this day to edit'));
+
+  function draw() {
+    const today = dayKey();
+    const list = state.entries.filter(e => e.day === current && e.type === 'symptoms').sort(byTime);
+    const others = entriesOn(current).filter(e => e.type !== 'symptoms');
+    const products = productsOn(current);
+    const w = state.weather.get(current);
+    const allRows = heatRows(false);
+    const withData = allRows.filter(r => r.key === 'worst' || list.some(c => (checkinValue(r, c) || 0) > 0));
+    if (!withData.some(r => r.key === key)) key = 'worst';
+    const row = allRows.find(r => r.key === key);
+
+    content.replaceChildren();
+    appendKids(content, [
+      h('div', { class: 'day-nav' },
+        h('button', { class: 'icon-btn', 'aria-label': 'Previous day', onclick: () => { current = addDays(current, -1); draw(); } }, icon('left')),
+        h('div', { class: 'day-nav-title' }, h('strong', {}, prettyDay(current)), h('span', {}, prettyDate(current))),
+        h('button', { class: 'icon-btn', 'aria-label': 'Next day', disabled: current >= today, onclick: () => { current = addDays(current, 1); draw(); } }, icon('right'))),
+      list.length
+        ? [
+          h('div', { class: 'chips scroll-x' }, withData.map(r =>
+            h('button', { class: 'chip' + (r.key === key ? ' on' : ''), onclick: () => { key = r.key; draw(); } }, r.label))),
+          h('div', { class: 'card day-chart-card' },
+            dayChart(row, list),
+            h('p', { class: 'small muted' }, list.length > 1
+              ? `${row.full} at each check-in. The colour band behind it is how this day's square looks on Trends.`
+              : `${row.full}: one check-in this day, so its square is a single colour.`)),
+          h('h3', { class: 'section' }, list.length === 1 ? '1 check-in' : `${list.length} check-ins`),
+          dayTable(list, withData),
+          list.some(c => c.note) ? h('div', { class: 'day-notes' }, list.filter(c => c.note).map(c => h('p', { class: 'small' }, h('strong', {}, c.time + ' '), c.note))) : null,
+        ]
+        : h('p', { class: 'empty' }, 'No check-ins on this day.'),
+      w ? [h('h3', { class: 'section' }, 'Weather'), h('p', { class: 'small' }, weatherText(w))] : null,
+      others.length ? [h('h3', { class: 'section' }, 'Also logged'),
+        h('div', { class: 'day-items' }, others.map(e => h('div', { class: 'day-item' },
+          h('span', { class: 'entry-time' }, e.time),
+          h('span', { class: 'entry-main' },
+            h('span', { class: 'entry-title' }, e.type === 'food' ? (e.meal || 'Food') : TYPE_META[e.type].title),
+            h('span', { class: 'entry-sub wrap' }, summarize(e))))))] : null,
+      products.length ? [h('h3', { class: 'section' }, 'Products in use'), h('p', { class: 'small muted' }, products.map(p => p.name).join(' · '))] : null]);
+  }
+  draw();
 }
 
 // ---------- weekly POEM ----------
@@ -720,9 +795,8 @@ function openPoem(entry, isNew) {
   addFooter(sheet, {
     onSave: async () => {
       if (answers.some(a => a == null)) { toast('Answer all 7 questions first'); return; }
-      Object.assign(entry, { answers, score: answers.reduce((s, a) => s + a, 0) });
-      await saveEntry(entry);
-      sheet.close(); render(); toast(`Weekly score saved: ${entry.score} / 28`);
+      const saved = await saveEntry({ ...entry, answers, score: answers.reduce((s, a) => s + a, 0) });
+      sheet.close(); render(); toast(`Weekly score saved: ${saved.score} / 28`);
     },
     onDelete: isNew ? null : () => confirmAndDelete(sheet, 'weekly score', () => removeEntry(entry)),
   });
@@ -751,7 +825,7 @@ function openReport() {
 
   const seg = h('div', { class: 'seg' });
   const nameInput = h('input', { type: 'text', placeholder: 'Optional', value: setting('reportName') || '', autocomplete: 'name', autocapitalize: 'words' });
-  nameInput.addEventListener('change', () => { saveSetting('reportName', nameInput.value.trim()); draw(); });
+  nameInput.addEventListener('change', () => { saveSetting('reportName', nameInput.value.trim()).catch(err => console.warn(err)); draw(); });
   const preview = h('div', { class: 'report-preview' });
   const status = h('p', { class: 'small muted center' });
   const shareBtn = h('button', { class: 'btn primary grow', disabled: true }, icon('share'), 'Share file');
@@ -853,7 +927,9 @@ function weatherCard(day) {
   if (!w && !setting('weather')?.enabled) return null;
   return h('div', { class: 'card weather-card' },
     h('div', { class: 'card-row' }, icon('sun'), h('strong', {}, 'Weather')),
-    h('p', { class: 'small muted' }, w ? weatherText(w) : 'Not loaded yet. It updates when you open the app with internet.'));
+    h('p', { class: 'small muted' }, w ? weatherText(w)
+      : day < addDays(dayKey(), -60) ? 'No weather saved for this day (weather only goes back about 2 months).'
+        : 'Not loaded yet. It updates when you open the app with internet.'));
 }
 
 function openWeatherSetup() {
@@ -1041,15 +1117,20 @@ function openRestore() {
   const status = h('p', { class: 'small muted' });
   sheet.add(
     h('div', { class: 'note-banner warn' }, h('span', {}, 'Restoring ', h('strong', {}, 'replaces everything'), ' currently on this phone with the contents of the backup.')),
-    h('button', { class: 'btn wide', onclick: guard(async () => {
+    h('button', { class: 'btn wide', onclick: async () => {
       const f = await pickFile('');
       if (!f) return;
+      try {
+        legacy = isLegacyBackup(new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+      } catch (err) {
+        status.textContent = "Couldn't read that file: " + err.message;
+        return;
+      }
       file = f;
       fileLabel.textContent = f.name;
-      legacy = isLegacyBackup(new Uint8Array(await f.slice(0, 8).arrayBuffer()));
       passField.classList.toggle('hidden', !legacy);
       status.textContent = '';
-    }) }, fileLabel),
+    } }, fileLabel),
     passField,
     status);
   addFooter(sheet, {
@@ -1099,15 +1180,18 @@ function openDeleteAll() {
 // ================= startup =================
 
 function applyUpdate() {
-  if (state.updating || !state.updateWorker) return;
+  const worker = state.swReg?.waiting || state.updateWorker;
+  if (state.updating || !worker) return;
   state.updating = true;
-  state.updateWorker.postMessage('skipWaiting');
+  worker.postMessage('skipWaiting');
+  setTimeout(() => location.reload(), 4000); // fallback if the switch-over event never arrives
 }
 
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
     const reg = await navigator.serviceWorker.register('./sw.js');
+    state.swReg = reg;
     const offer = worker => { state.updateWorker = worker; if (state.tab === 'today') render(); };
     if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
     reg.addEventListener('updatefound', () => {
@@ -1145,7 +1229,8 @@ async function init() {
     state.settings = new Map(settings.map(s => [s.key, s.value]));
     if (state.settings.has('backupKey')) { await db.del('settings', 'backupKey'); state.settings.delete('backupKey'); }
   } catch (err) {
-    mainEl.replaceChildren(h('div', { class: 'view' }, banner('warn', "Couldn't open storage", err.message)));
+    console.error(err);
+    mainEl.replaceChildren(h('div', { class: 'view' }, banner('warn', "Couldn't open the diary's storage", err.message, { label: 'Try again', fn: () => location.reload() })));
     return;
   }
   render();

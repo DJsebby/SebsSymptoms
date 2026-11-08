@@ -6,6 +6,7 @@
   --sev6: #d95b3a; --sev7: #c2432a; --sev8: #a4321f; --sev9: #852416; --sev10: #66180e;
   --hum1: #e3eefc; --hum2: #cde2fb; --hum3: #b7d3f6; --hum4: #9ec5f4; --hum5: #86b6ef;
   --hum6: #6da7ec; --hum7: #5598e7; --hum8: #3987e5; --hum9: #2a78d6; --hum10: #1c5cab;
+  --zero: #cfe1d9;
   color-scheme: light;
   background: #ffffff;
   color: #1c1b19;
@@ -41,9 +42,9 @@
 .rpt .rpt-heat { margin: 8px 0 14px; break-inside: avoid; }
 .rpt .rh { display: grid; gap: 1.5px; grid-auto-rows: 14px; }
 .rpt .rh-label { font-size: 10.5px; color: #57554f; display: flex; align-items: center; white-space: nowrap; overflow: hidden; }
-.rpt .rh-cell { border-radius: 2px; background: var(--c, #f1efeb); }
-.rpt .rh-cell.zero, .rpt .lg.zero { background: #cfe1d9; }
-.rpt .rh-cell.nodata, .rpt .lg.nodata { background: #f3f1ed; }
+.rpt .rh-cell { border-radius: 2px; background-color: var(--c, #f1efeb); }
+.rpt .rh-cell.zero, .rpt .lg.zero { background-color: var(--zero); }
+.rpt .rh-cell.nodata, .rpt .lg.nodata { background-color: #f3f1ed; }
 .rpt .lg.nodata { box-shadow: inset 0 0 0 1px #e2dfd8; }
 .rpt .gap-top { margin-top: 5px; }
 .rpt .rh-date { font-size: 9.5px; color: #8a877f; white-space: nowrap; direction: rtl; text-align: right; line-height: 14px; }
