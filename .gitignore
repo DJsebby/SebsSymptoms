@@ -1,5 +1,6 @@
 # Never commit personal health data. Backups, exports and decrypted folders stay off GitHub.
 *.ssbk
+*.zip
 *.csv
 *.json.bak
 backup*/

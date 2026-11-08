@@ -1,114 +1,135 @@
-// Encrypted backup format (.ssbk). Pure functions: no storage or UI here.
-//
-// File layout:
-//   "SSBK" (4 bytes) | format (1) | PBKDF2 iterations (uint32 BE) | salt (16) | IV (12) | AES-256-GCM ciphertext
-// The 37-byte header is authenticated as additional data, so any tampering is detected.
-// Key = PBKDF2-SHA256(passphrase, salt, iterations) → 256 bits.
-//
-// Decrypted payload:
-//   JSON length (uint32 BE) | JSON (UTF-8) | raw photo bytes...
-// The JSON lists each photo with byte offsets into the trailing section.
-// tools/decrypt_backup.py reads the same format on a computer.
+// Backups are ordinary, readable .zip files:
+//   README.txt     what each file is
+//   entries.csv    one row per diary entry (opens in Excel, Numbers, Google Sheets)
+//   products.csv   detergents, soaps and creams with the dates used
+//   weather.csv    daily weather, if weather is turned on
+//   data.json      everything in one file; the app restores from this
+//   photos/        symptom photos, named date_time_area
+//   labels/        ingredient-label photos for products
 
-const MAGIC = [0x53, 0x53, 0x42, 0x4b]; // "SSBK"
-const FORMAT = 1;
-const HEADER_LEN = 37;
-export const DEFAULT_ITERATIONS = 600000;
+import { makeZip, readZip } from './zip.js';
+import { REGIONS, GENERAL, FACTORS, labelFor } from './body.js';
+import { POLLEN } from './weather.js';
+import { makeThumb } from './images.js';
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+export const FORMAT = 2;
 
-export const newSalt = () => crypto.getRandomValues(new Uint8Array(16));
+const TYPE_LABEL = { symptoms: 'Check-in', food: 'Food', activity: 'Activity', meds: 'Meds & creams', note: 'Note', photo: 'Photo', poem: 'Weekly eczema score (POEM)' };
 
-export async function deriveKeyRaw(passphrase, salt, iterations = DEFAULT_ITERATIONS) {
-  const base = await crypto.subtle.importKey('raw', enc.encode(passphrase.normalize('NFC')), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, 256);
-  return new Uint8Array(bits);
+const README = `Seb's Symptoms backup
+=====================
+
+entries.csv   One row per diary entry. Opens in Excel, Numbers or Google Sheets.
+              Check-in rows have a 0-10 score for every symptom and body area
+              (0 = none). "Right" and "Left" mean your own right and left.
+              Bad sleep and Stress are blank when not recorded.
+              Weekly eczema score rows have a POEM score (0-28).
+products.csv  Detergents, soaps and creams, with the dates you used them.
+weather.csv   Daily weather for your area (if weather is turned on).
+photos/       Symptom photos, named date_time_area.
+labels/       Photos of product ingredient labels.
+data.json     Everything above in one file. The app restores from this.
+
+To restore: open the app, go to Settings > Restore from a backup,
+and choose this zip file.
+`;
+
+const slug = s => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'item';
+
+function csvCell(v) {
+  if (v == null) return '';
+  let s = String(v);
+  if (/^[=+\-@]/.test(s)) s = "'" + s; // stop spreadsheets treating text as a formula
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
+// The leading BOM makes Excel read the file as UTF-8.
+const toCsv = rows => '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 
-const aesKey = (raw, usage) => crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, [usage]);
-
-export function packPayload({ entries, products, photos, meta }) {
-  const parts = [];
-  let offset = 0;
-  const photoIndex = photos.map(p => {
-    const data = new Uint8Array(p.data);
-    const thumb = new Uint8Array(p.thumb || new ArrayBuffer(0));
-    const m = { id: p.id, type: p.type, w: p.w, h: p.h, created: p.created,
-      off: offset, len: data.byteLength, toff: offset + data.byteLength, tlen: thumb.byteLength };
-    parts.push(data, thumb);
-    offset += data.byteLength + thumb.byteLength;
-    return m;
+function entriesCsv(entries, fileFor) {
+  const head = ['Date', 'Time', 'Type', 'Meal', 'Items', 'Note',
+    ...GENERAL.map(g => g.label), ...REGIONS.map(r => r.label), ...FACTORS.map(f => f.label), 'Worst score', 'POEM score', 'Photo area', 'Photo file'];
+  const rows = entries.map(e => {
+    const check = e.type === 'symptoms';
+    return [
+      e.day, e.time, TYPE_LABEL[e.type] || e.type, e.meal || '', (e.items || []).join('; '),
+      e.type === 'note' ? e.text : (e.note || ''),
+      ...GENERAL.map(g => (check ? e.general?.[g.id] || 0 : '')),
+      ...REGIONS.map(r => (check ? e.areas?.[r.id] || 0 : '')),
+      ...FACTORS.map(f => (check ? e.factors?.[f.id] ?? '' : '')),
+      check ? Math.max(0, ...Object.values(e.areas || {}), ...Object.values(e.general || {})) : '',
+      e.type === 'poem' ? e.score : '',
+      e.type === 'photo' && e.area ? labelFor(e.area) : '',
+      fileFor.get(e.photoId) || '',
+    ];
   });
-  const json = enc.encode(JSON.stringify({ ...meta, entries, products, photos: photoIndex }));
-  const out = new Uint8Array(4 + json.byteLength + offset);
-  new DataView(out.buffer).setUint32(0, json.byteLength);
-  out.set(json, 4);
-  let pos = 4 + json.byteLength;
-  for (const part of parts) { out.set(part, pos); pos += part.byteLength; }
-  return out;
+  return toCsv([head, ...rows]);
 }
 
-export function unpackPayload(buffer) {
-  const u8 = new Uint8Array(buffer);
-  const n = new DataView(u8.buffer, u8.byteOffset, u8.byteLength).getUint32(0);
-  const data = JSON.parse(dec.decode(u8.subarray(4, 4 + n)));
-  const base = 4 + n;
-  data.photos = data.photos.map(m => ({
-    id: m.id, type: m.type, w: m.w, h: m.h, created: m.created,
-    data: u8.slice(base + m.off, base + m.off + m.len).buffer,
-    thumb: u8.slice(base + m.toff, base + m.toff + m.tlen).buffer,
-  }));
-  return data;
+function productsCsv(products, fileFor) {
+  const head = ['Name', 'Category', 'Started', 'Stopped', 'Ingredients', 'Note', 'Label photo'];
+  const rows = [...products].sort((a, b) => a.start.localeCompare(b.start))
+    .map(p => [p.name, p.category, p.start, p.end || '', p.ingredients || '', p.note || '', fileFor.get(p.photoId) || '']);
+  return toCsv([head, ...rows]);
 }
 
-export async function encrypt(plain, keyRaw, salt, iterations) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const header = new Uint8Array(HEADER_LEN);
-  header.set(MAGIC, 0);
-  header[4] = FORMAT;
-  new DataView(header.buffer).setUint32(5, iterations);
-  header.set(salt, 9);
-  header.set(iv, 25);
-  const key = await aesKey(keyRaw, 'encrypt');
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: header }, key, plain));
-  const out = new Uint8Array(HEADER_LEN + ct.byteLength);
-  out.set(header, 0);
-  out.set(ct, HEADER_LEN);
-  return out;
+function weatherCsv(weather) {
+  const pollen = POLLEN.filter(p => weather.some(w => w.pollen?.[p] != null));
+  const head = ['Date', 'Max temp °C', 'Min temp °C', 'Humidity avg %', 'Humidity low %', 'Rain mm', 'UV max', 'PM2.5 µg/m³', ...pollen.map(p => `${p} pollen`)];
+  const rows = [...weather].sort((a, b) => a.day.localeCompare(b.day))
+    .map(w => [w.day, w.tMax, w.tMin, w.humMean, w.humMin, w.rain, w.uv, w.pm25 ?? '', ...pollen.map(p => w.pollen?.[p] ?? '')]);
+  return toCsv([head, ...rows]);
 }
 
-export function readHeader(bytes) {
-  const u8 = new Uint8Array(bytes);
-  if (u8.byteLength < HEADER_LEN + 16 || MAGIC.some((b, i) => u8[i] !== b)) {
-    throw new Error("This isn't a Seb's Symptoms backup file.");
+export function buildBackup({ entries, products, photos, weather = [], appVersion }) {
+  const known = new Set(photos.map(p => p.id));
+  const fileFor = new Map();
+  const sorted = [...entries].sort((a, b) => (a.day + a.time).localeCompare(b.day + b.time));
+  for (const e of sorted) {
+    if (e.photoId && known.has(e.photoId)) fileFor.set(e.photoId, `photos/${e.day}_${e.time.replace(':', '')}_${e.area || 'photo'}_${e.photoId.slice(0, 8)}.jpg`);
   }
-  if (u8[4] !== FORMAT) throw new Error('This backup was made by a newer version of the app.');
-  const iterations = new DataView(u8.buffer, u8.byteOffset, HEADER_LEN).getUint32(5);
-  if (iterations < 100000 || iterations > 10000000) throw new Error('This backup file looks damaged.');
-  return { iterations, salt: u8.slice(9, 25), iv: u8.slice(25, 37), header: u8.slice(0, HEADER_LEN) };
-}
-
-export async function createBackup({ entries, products, photos, keyRaw, salt, iterations, appVersion }) {
-  const meta = { app: 'SebsSymptoms', format: FORMAT, appVersion, exportedAt: new Date().toISOString() };
-  const plain = packPayload({ entries, products, photos, meta });
-  return encrypt(plain, keyRaw, salt, iterations);
-}
-
-// Returns the decrypted data plus the key details, so restoring on a new phone
-// keeps using the same passphrase for future backups.
-export async function openBackup(bytes, passphrase) {
-  const u8 = new Uint8Array(bytes);
-  const hd = readHeader(u8);
-  const keyRaw = await deriveKeyRaw(passphrase, hd.salt, hd.iterations);
-  const key = await aesKey(keyRaw, 'decrypt');
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: hd.iv, additionalData: hd.header }, key, u8.subarray(HEADER_LEN));
-  } catch {
-    throw new Error('Wrong passphrase, or the file is damaged.');
+  for (const p of products) {
+    if (p.photoId && known.has(p.photoId)) fileFor.set(p.photoId, `labels/${slug(p.name)}_${p.photoId.slice(0, 8)}.jpg`);
   }
-  const data = unpackPayload(plain);
-  if (data.app !== 'SebsSymptoms') throw new Error("This isn't a Seb's Symptoms backup file.");
-  return { data, keyRaw, salt: hd.salt, iterations: hd.iterations };
+  for (const p of photos) if (!fileFor.has(p.id)) fileFor.set(p.id, `photos/unlinked_${p.id.slice(0, 8)}.jpg`);
+
+  const withFile = x => (fileFor.has(x.photoId) ? { ...x, photoFile: fileFor.get(x.photoId) } : { ...x });
+  const data = {
+    app: 'SebsSymptoms', format: FORMAT, appVersion, exportedAt: new Date().toISOString(),
+    entries: sorted.map(withFile),
+    products: products.map(withFile),
+    photos: photos.map(p => ({ id: p.id, file: fileFor.get(p.id), type: p.type, w: p.w, h: p.h, created: p.created })),
+    weather: [...weather].sort((a, b) => a.day.localeCompare(b.day)),
+  };
+  return makeZip([
+    { name: 'README.txt', data: README },
+    { name: 'entries.csv', data: entriesCsv(sorted, fileFor) },
+    { name: 'products.csv', data: productsCsv(products, fileFor) },
+    ...(weather.length ? [{ name: 'weather.csv', data: weatherCsv(weather) }] : []),
+    { name: 'data.json', data: JSON.stringify(data, null, 1) },
+    ...photos.map(p => ({ name: fileFor.get(p.id), data: p.data })),
+  ]);
+}
+
+// Reads a backup zip into { entries, products, photos } ready for the database.
+export async function parseBackupZip(file, onProgress = () => {}) {
+  const zip = await readZip(file);
+  // Allow for the files sitting inside a folder (happens if it was re-zipped on a computer).
+  const jsonName = zip.names.find(n => n === 'data.json' || n.endsWith('/data.json'));
+  if (!jsonName) throw new Error("This zip isn't a Seb's Symptoms backup (no data.json inside).");
+  const prefix = jsonName.slice(0, -'data.json'.length);
+  let data;
+  try { data = JSON.parse(await zip.text(jsonName)); } catch { throw new Error('data.json in this backup is damaged.'); }
+  if (data.app !== 'SebsSymptoms' || !Array.isArray(data.entries)) throw new Error("This zip isn't a Seb's Symptoms backup.");
+
+  const photos = [];
+  const missing = [];
+  for (const [i, m] of (data.photos || []).entries()) {
+    onProgress(`Restoring photo ${i + 1} of ${data.photos.length}…`);
+    const bytes = await zip.bytes(prefix + m.file);
+    if (!bytes) { missing.push(m.file); continue; }
+    const thumb = await makeThumb(bytes, m.type).catch(() => null);
+    photos.push({ id: m.id, type: m.type, w: m.w, h: m.h, created: m.created, data: bytes.buffer, thumb });
+  }
+  const strip = ({ photoFile, ...rest }) => rest;
+  return { entries: data.entries.map(strip), products: (data.products || []).map(strip), photos, weather: data.weather || [], missing };
 }

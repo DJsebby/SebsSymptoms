@@ -2,20 +2,23 @@
 
 A private, offline diary for tracking eczema, sinus symptoms and their possible triggers: food, activities, medications and creams, and the products that touch your skin. Built for an iPhone, and installed from Safari to the Home Screen.
 
-- **Check-ins with a body map.** Tap the face, neck, arms, inner elbows, or hands and wrists and score each one from 1 to 10. Itch, dry skin, swelling and sinus get their own scores. A new check-in starts from the previous one, so you only change what's different.
-- **Food, activity, meds and creams.** Things you've logged before show up as one-tap suggestions.
+- **Check-ins with a body map.** Tap the face, neck, arms, inner elbows, or hands and wrists and score each one from 1 to 10. Itch, dry skin, swelling and sinus get their own scores, as do sleep and stress. A new check-in starts from the previous one, so you only change what's different (sleep and stress always start blank).
+- **Weekly eczema score (POEM).** Seven questions once a week give a 0–28 score that dermatologists recognise. The Today screen reminds you when it's due.
+- **Food, activity, meds and creams.** Things you've logged before show up as one-tap suggestions. BJJ, Gym and Work (bartending) are always one tap away.
 - **Products.** Add detergents, soaps and creams once, with a photo of the ingredients label. They count for every day until you mark them stopped.
 - **Photos of symptoms.** Shrunk to save space, with location data removed. They stay inside the app and don't go to your camera roll or iCloud Photos.
-- **Trends.** A heatmap of every area and symptom over 14, 30 or 90 days.
-- **Encrypted backups.** Two taps a day sends an AES-256 encrypted file to Google Drive.
+- **Trends.** A colour grid of every area, symptom, sleep, stress and humidity over 14, 30 or 90 days, plus POEM history.
+- **Weather (optional).** Daily temperature, humidity, rain, UV and air quality (PM2.5) from Open-Meteo, for the past 2 months onwards.
+- **Specialist report.** One document for appointments covering a summary, most affected areas, the day-by-day grid, POEM, products with label photos, meds, activities, foods, weather, notes and photos. Print it, save it as a PDF, or share it as a file.
+- **Backups to Google Drive.** Two taps a day saves a normal .zip file containing spreadsheets and photos.
 
 ## Privacy model
 
 | | |
 |---|---|
 | Where data lives | Only in the app's storage on your iPhone (IndexedDB). No account, server, analytics or tracking. |
-| Network | A Content-Security-Policy stops the app from contacting any server other than its own host. The only thing ever downloaded is the app's own code. |
-| Backups | Encrypted on the phone before sharing: AES-256-GCM with a key derived from your passphrase (PBKDF2-SHA256, 600k iterations). Google stores only scrambled bytes. |
+| Network | A Content-Security-Policy stops the app from contacting any server except its own host and, if weather is turned on, Open-Meteo. Open-Meteo receives only a location rounded to about 10 km. |
+| Backups | Plain, readable .zip files saved to your Google Drive. Anyone who can get into your Google account can open them, so keep 2-step verification on. |
 | Code hosting | GitHub Pages serves the code. Your data is never uploaded there. `.gitignore` blocks backup files from being committed. |
 | On the phone | Protected by the iPhone's own encryption, so keep a passcode or Face ID on. |
 
@@ -33,27 +36,33 @@ GitHub Pages is free for public repos. A public repo means people can see the *c
 2. Tap **Share**, then **Add to Home Screen**.
 3. **Always open the app from the Home Screen icon.** Safari and the Home Screen app keep separate copies of the data.
 
-### 3. Turn on backups
+### 3. Back up daily
 1. Install the **Google Drive** app and sign in.
-2. In the app go to **Settings → Set backup passphrase**. Save the passphrase in the iPhone **Passwords** app. There is no recovery if it's lost.
-3. Each day the Today screen shows a backup banner. Tap **Back up**, then **Save to Google Drive**, then choose **Drive** and pick a folder (e.g. "SebsSymptoms backups").
+2. Each day the Today screen shows a backup banner. Tap **Back up**, then **Save to Google Drive**, then choose **Drive** and pick a folder (e.g. "SebsSymptoms backups").
 
 ### 4. Daily reminders
 iPhone web apps can't schedule their own notifications without a server, so use the **Reminders** app instead. Create "Fill in symptom diary", set a time, and set Repeat to Daily.
 
 ## Restoring
-On a new phone or after reinstalling, go to **Settings → Restore from a backup**, choose the `.ssbk` file from Drive, and enter the passphrase.
+On a new phone or after reinstalling, go to **Settings → Restore from a backup** and choose a backup `.zip` from Drive. Older encrypted `.ssbk` backups from version 1.0 also work; the app asks for that file's passphrase.
 
-## Opening a backup on a computer
-```bash
-pip install cryptography
-python3 tools/decrypt_backup.py SebsSymptoms-2026-11-08-2100.ssbk
-```
-This writes `data.json` (all entries and products) and a `photos/` folder. The output is **not** encrypted, so keep it private and out of this repo.
+## What's in a backup
+A backup is an ordinary `.zip` file. Double-click it on a computer, or tap it in the iPhone Files app.
+
+| File | Contents |
+|---|---|
+| `entries.csv` | One row per entry. Check-ins have a 0–10 column for every symptom and body area (0 = none). Opens in Excel, Numbers or Google Sheets. |
+| `products.csv` | Detergents, soaps and creams, with start and stop dates. |
+| `weather.csv` | Daily weather, if weather is turned on. |
+| `photos/` | Symptom photos, named `date_time_area`. |
+| `labels/` | Ingredient-label photos. |
+| `data.json` | Everything in one file. The app restores from this. |
+| `README.txt` | A short guide to the files. |
+
+`tools/decrypt_backup.py` is only for old encrypted `.ssbk` backups made by version 1.0.
 
 ## Warnings
 - Deleting the Home Screen icon deletes the app's data. Back up first.
-- Backup files are only as safe as your passphrase. Use four or more random words.
 
 ## Development
 Plain HTML, CSS and JavaScript modules, with no build step and no dependencies.
@@ -68,12 +77,19 @@ python3 -m http.server 8000   # then open http://localhost:8000
 |---|---|
 | `js/app.js` | Screens and flows |
 | `js/body.js` | The body-map figure and symptom list |
-| `js/backup.js` | Encrypted backup format (also documented in `tools/decrypt_backup.py`) |
+| `js/backup.js` | Builds and reads backup zips (CSV + JSON + photos) |
+| `js/zip.js` | Minimal zip writer and reader |
+| `js/legacy-backup.js` | Restores old encrypted `.ssbk` backups |
+| `js/heat.js` | The day-by-day colour grid (Trends and report) |
+| `js/poem.js` | POEM questions and severity bands |
+| `js/weather.js` | Open-Meteo weather, air quality and town search |
+| `js/report.js`, `css/report.css` | The specialist report |
 | `js/db.js` | IndexedDB storage |
 | `js/images.js` | Photo compression and metadata stripping |
 | `sw.js` | Offline caching |
 
 ### Planned
 - Importing past paper-diary data (CSV)
-- Correlation analysis: which foods, products and activities line up with flare-ups, allowing for delayed reactions
-- A printable report for specialist appointments
+- Correlation analysis: which foods, products, activities and weather line up with flare-ups, allowing for delayed reactions
+
+POEM (Patient-Oriented Eczema Measure) © The University of Nottingham.

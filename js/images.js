@@ -15,6 +15,19 @@ export async function compressImage(file, maxDim = 1600, quality = 0.82, thumbDi
   }
 }
 
+// Rebuilds a small preview image (used when restoring from a backup).
+export async function makeThumb(bytes, type = 'image/jpeg') {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return (await draw(img, 360, 0.72)).buf;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function draw(img, maxDim, quality) {
   const sw = img.naturalWidth, sh = img.naturalHeight;
   const scale = Math.min(1, maxDim / Math.max(sw, sh));

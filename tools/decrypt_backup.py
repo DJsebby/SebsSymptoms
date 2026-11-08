@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Open a Seb's Symptoms backup (.ssbk) on a computer.
+"""Open an OLD encrypted Seb's Symptoms backup (.ssbk) on a computer.
+
+Only for backups made by version 1.0. Newer backups are ordinary .zip files:
+just unzip them, no tool needed.
 
 Writes a folder containing data.json (every entry and product) and a photos/ folder.
 Useful for checking a backup works, for bringing data to a specialist, or for

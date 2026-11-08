@@ -1,13 +1,18 @@
 // Seb's Symptoms — main screens. All data stays in this phone's storage (IndexedDB).
 // The only way data leaves is an encrypted backup file you choose to share.
 
-import { h, icon, openSheet, confirmSheet, toast, dayKey, timeKey, addDays, prettyDay, prettyDate, shortDate, whenText, uid, fmtBytes, parseDay } from './ui.js';
+import { h, icon, openSheet, confirmSheet, toast, dayKey, timeKey, addDays, daysBetween, prettyDay, prettyDate, shortDate, whenText, uid, fmtBytes } from './ui.js';
 import * as db from './db.js';
-import { REGIONS, GENERAL, labelFor, shortLabel, bodyMap } from './body.js';
+import { REGIONS, GENERAL, FACTORS, labelFor, shortLabel, bodyMap } from './body.js';
 import { compressImage } from './images.js';
-import * as bk from './backup.js';
+import { dailyScores, heatRows, heatGrid, heatLegend, describeCell, weatherText } from './heat.js';
+import { POEM_QUESTIONS, POEM_OPTIONS, POEM_CREDIT, poemBand, poemSev } from './poem.js';
+import { fetchWeatherDays, searchPlaces, roundCoord } from './weather.js';
+import { buildReport, reportFile } from './report.js';
+import { buildBackup, parseBackupZip } from './backup.js';
+import { isLegacyBackup, openLegacyBackup } from './legacy-backup.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.2.0';
 
 const state = {
   tab: 'today',
@@ -16,6 +21,7 @@ const state = {
   entries: [],
   products: [],
   settings: new Map(),
+  weather: new Map(),
   trendRange: 30,
   photoFilter: 'all',
   updateWorker: null,
@@ -134,14 +140,17 @@ function banner(kind, title, text, action) {
 
 function banners() {
   const out = [];
-  if (state.updateWorker) out.push(banner('info', 'Update ready', 'A new version of the app is downloaded.', { label: 'Update', fn: () => state.updateWorker.postMessage('skipWaiting') }));
+  if (state.updateWorker) out.push(banner('info', 'Update ready', 'A new version of the app is downloaded.', { label: 'Update', fn: applyUpdate }));
   if (!isStandalone()) {
     out.push(banner('warn', 'Add this to your Home Screen',
       'In Safari tap Share, then "Add to Home Screen". Always open the app from that icon: Safari keeps a separate copy of the data.'));
   }
   if (state.entries.length) {
-    if (!setting('backupKey')) out.push(banner('info', 'Turn on encrypted backups', 'Takes a minute. Protects your diary if anything happens to this phone.', { label: 'Set up', fn: () => openPassphraseSetup() }));
-    else if (backupDue()) out.push(banner('info', "Today's backup isn't done", 'Last backup: ' + whenText(setting('lastBackup')) + '.', { label: 'Back up', fn: openBackup }));
+    if (backupDue()) out.push(banner('info', "Today's backup isn't done", 'Last backup: ' + whenText(setting('lastBackup')) + '.', { label: 'Back up', fn: openBackup }));
+    const lp = lastPoem();
+    if (!lp || daysBetween(lp.day, dayKey()) >= 7) {
+      out.push(banner('info', 'Weekly eczema score', (lp ? `Last done ${shortDate(lp.day)}. ` : '') + '7 quick questions about the past week.', { label: 'Start', fn: startPoem }));
+    }
   }
   return out;
 }
@@ -164,6 +173,7 @@ const TYPE_META = {
   meds: { title: 'Meds & creams', icon: 'pill' },
   note: { title: 'Note', icon: 'pencil' },
   photo: { title: 'Photo', icon: 'camera' },
+  poem: { title: 'Weekly eczema score', icon: 'clipboard' },
 };
 
 function viewToday() {
@@ -183,6 +193,7 @@ function viewToday() {
       h('button', { class: 'quick-btn' + (q.type === 'symptoms' ? ' main' : '') + (q.type === 'symptoms' && !checkedIn ? ' due' : ''), onclick: () => startNew(q.type) },
         icon(q.icon), h('span', {}, q.label)))),
     productsCard(day),
+    weatherCard(day),
     h('h3', { class: 'section' }, isToday ? 'Today so far' : 'Entries'),
     list.length
       ? h('div', { class: 'entries' }, list.map(entryRow))
@@ -207,14 +218,16 @@ function summarize(e) {
     case 'symptoms': {
       const areas = Object.entries(e.areas || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
       const general = GENERAL.filter(g => e.general?.[g.id] > 0).map(g => `${g.label} ${e.general[g.id]}`);
-      if (!areas.length && !general.length) return 'No symptoms';
+      const factors = FACTORS.filter(f => e.factors?.[f.id] > 0).map(f => `${f.short} ${e.factors[f.id]}`);
       const parts = areas.slice(0, 3).map(([k, v]) => `${shortLabel(k)} ${v}`);
       if (areas.length > 3) parts.push(`+${areas.length - 3} more`);
-      return [...parts, ...general].join(' · ');
+      const symptoms = [...parts, ...general];
+      return [...(symptoms.length ? symptoms : ['No symptoms']), ...factors].join(' · ');
     }
     case 'food': case 'activity': case 'meds': return (e.items || []).join(', ') + (e.note ? ` — ${e.note}` : '');
     case 'note': return e.text;
     case 'photo': return [e.area ? labelFor(e.area) : 'No area', e.note].filter(Boolean).join(' · ');
+    case 'poem': return `${e.score} / 28 · ${poemBand(e.score)}`;
     default: return '';
   }
 }
@@ -227,7 +240,8 @@ function entryRow(e) {
     h('span', { class: 'entry-time' }, e.time),
     e.type === 'photo' ? thumb(e.photoId, 'entry-thumb') : h('span', { class: 'entry-icon t-' + e.type }, icon(meta.icon)),
     h('span', { class: 'entry-main' }, h('span', { class: 'entry-title' }, title), h('span', { class: 'entry-sub' }, summarize(e))),
-    e.type === 'symptoms' ? h('span', { class: 'badge sev-' + worst + (worst ? '' : ' zero') }, worst ? String(worst) : '0') : null);
+    e.type === 'symptoms' ? h('span', { class: 'badge sev-' + worst + (worst ? '' : ' zero') }, worst ? String(worst) : '0')
+      : e.type === 'poem' ? h('span', { class: 'badge sev-' + poemSev(e.score) }, String(e.score)) : null);
 }
 
 function newEntry(type) {
@@ -241,7 +255,7 @@ function startNew(type) {
 }
 
 function openEntry(e, isNew = false) {
-  const openers = { symptoms: openCheckin, food: openItems, activity: openItems, meds: openItems, note: openNote, photo: openPhoto };
+  const openers = { symptoms: openCheckin, food: openItems, activity: openItems, meds: openItems, note: openNote, photo: openPhoto, poem: openPoem };
   openers[e.type](e, isNew);
 }
 
@@ -268,10 +282,10 @@ async function confirmAndDelete(sheet, what, fn) {
 
 // ---------- symptom check-in ----------
 
-function pickScore(title, current, onPick) {
+function pickScore(title, current, onPick, hint) {
   const s = openSheet(title, { backdropClose: true });
   s.add(
-    h('p', { class: 'muted small center' }, '1 = barely there · 10 = worst it gets'),
+    h('p', { class: 'muted small center' }, hint || '1 = barely there · 10 = worst it gets'),
     h('div', { class: 'score-grid' }, Array.from({ length: 10 }, (_, i) => i + 1).map(n =>
       h('button', { class: 'score sev-' + n + (current === n ? ' current' : ''), 'aria-label': `Score ${n}`, onclick: () => { onPick(n); s.close(); } }, String(n)))),
     h('button', { class: 'btn wide', onclick: () => { onPick(0); s.close(); } }, 'None / clear'));
@@ -280,6 +294,7 @@ function pickScore(title, current, onPick) {
 function openCheckin(entry, isNew) {
   let areas = { ...(entry.areas || {}) };
   let general = { ...(entry.general || {}) };
+  const factors = { ...(entry.factors || {}) }; // sleep & stress: never copied from the last check-in
   let copiedFrom = null;
   if (isNew) {
     const last = lastCheckin();
@@ -306,6 +321,16 @@ function openCheckin(entry, isNew) {
     }));
   }
 
+  const factorList = h('div', { class: 'list' });
+  function drawFactors() {
+    factorList.replaceChildren(...FACTORS.map(f => {
+      const v = factors[f.id] || 0;
+      return h('button', { class: 'list-row', onclick: () => pickScore(f.label, v, nv => { setScore(factors, f.id, nv); drawFactors(); }, f.hint) },
+        h('span', {}, f.label),
+        h('span', { class: 'badge sev-' + v + (v ? '' : ' zero') }, v ? String(v) : '–'));
+    }));
+  }
+
   const copiedBanner = copiedFrom ? h('div', { class: 'note-banner' },
     h('span', {}, `Copied from your last check-in (${prettyDay(copiedFrom.day)} ${copiedFrom.time}). Just change what's different.`),
     h('button', { class: 'link', onclick: () => { areas = {}; general = {}; drawAreas(); drawGeneral(); copiedBanner.remove(); } }, 'Start blank')) : null;
@@ -321,14 +346,17 @@ function openCheckin(entry, isNew) {
     scoredList,
     h('h3', { class: 'section' }, 'Overall'),
     generalList,
+    h('h3', { class: 'section' }, 'Sleep & stress'),
+    factorList,
     field('Time', time),
     field('Note', note));
   drawAreas();
   drawGeneral();
+  drawFactors();
 
   addFooter(sheet, {
     onSave: async () => {
-      Object.assign(entry, { areas, general, note: note.value.trim(), time: time.value || entry.time });
+      Object.assign(entry, { areas, general, factors, note: note.value.trim(), time: time.value || entry.time });
       await saveEntry(entry);
       sheet.close(); render(); toast('Check-in saved');
     },
@@ -340,7 +368,7 @@ function openCheckin(entry, isNew) {
 
 const ITEM_TYPES = {
   food: { title: 'Food & drink', placeholder: 'e.g. oat milk', seeds: [] },
-  activity: { title: 'Activity', placeholder: 'e.g. gym', seeds: ['Exercise / sweating', 'Swimming', 'Gardening', 'Cleaning', 'Hot shower', 'Outdoors', 'Around pets', 'Poor sleep', 'Stressed'] },
+  activity: { title: 'Activity', placeholder: 'e.g. hiking', pinned: ['BJJ', 'Gym', 'Work (bartending)'], seeds: ['Sweating', 'Swimming', 'Gardening', 'Cleaning', 'Hot shower', 'Outdoors', 'Around pets'] },
   meds: { title: 'Meds & creams', placeholder: 'e.g. hydrocortisone 1%', seeds: ['Moisturiser', 'Steroid cream', 'Antihistamine', 'Nasal spray'] },
 };
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Drink'];
@@ -364,8 +392,13 @@ function frequentItems(type) {
       if (m) { m.count++; if (e.day > m.last) m.last = e.day; } else map.set(k, { label: item, count: 1, last: e.day });
     }
   }
-  for (const seed of ITEM_TYPES[type].seeds) if (!map.has(seed.toLowerCase())) map.set(seed.toLowerCase(), { label: seed, count: 0, last: '' });
-  return [...map.values()].sort((a, b) => b.count - a.count || b.last.localeCompare(a.last) || a.label.localeCompare(b.label));
+  const pinned = ITEM_TYPES[type].pinned || [];
+  for (const seed of [...pinned, ...ITEM_TYPES[type].seeds]) if (!map.has(seed.toLowerCase())) map.set(seed.toLowerCase(), { label: seed, count: 0, last: '' });
+  // Pinned favourites always come first, in their fixed order; the rest by how often they're used.
+  const top = pinned.map(p => ({ ...map.get(p.toLowerCase()), pinned: true }));
+  const rest = [...map.values()].filter(x => !pinned.some(p => p.toLowerCase() === x.label.toLowerCase()))
+    .sort((a, b) => b.count - a.count || b.last.localeCompare(a.last) || a.label.localeCompare(b.label));
+  return [...top, ...rest];
 }
 
 function openItems(entry, isNew) {
@@ -396,7 +429,7 @@ function openItems(entry, isNew) {
       : [h('span', { class: 'small muted' }, 'Nothing added yet')]));
     const q = input.value.trim().toLowerCase();
     const list = freq.filter(f => !has(f.label) && (!q || f.label.toLowerCase().includes(q))).slice(0, 30);
-    suggestions.replaceChildren(...list.map(f => h('button', { class: 'chip', onclick: () => addItem(f.label) }, f.label)));
+    suggestions.replaceChildren(...list.map(f => h('button', { class: 'chip' + (f.pinned ? ' pinned' : ''), onclick: () => addItem(f.label) }, f.label)));
     mealRow.replaceChildren(...MEALS.map(m => h('button', { class: 'seg-btn' + (m === meal ? ' on' : ''), onclick: () => { meal = m; draw(); } }, m)));
   }
   input.addEventListener('input', draw);
@@ -609,80 +642,296 @@ function viewTrends() {
   const range = state.trendRange;
   const today = dayKey();
   const days = Array.from({ length: range }, (_, i) => addDays(today, i - range + 1));
-
-  // Highest score per day for each area / symptom (several check-ins a day → keep the worst).
-  const daily = new Map();
-  for (const e of state.entries) {
-    if (e.type !== 'symptoms') continue;
-    let d = daily.get(e.day);
-    if (!d) daily.set(e.day, d = {});
-    for (const [k, v] of Object.entries(e.areas || {})) d[k] = Math.max(d[k] || 0, v);
-    for (const [k, v] of Object.entries(e.general || {})) d['g:' + k] = Math.max(d['g:' + k] || 0, v);
-  }
-  const rows = [
-    ...GENERAL.map(g => ({ key: 'g:' + g.id, label: g.label, full: g.label })),
-    ...REGIONS.map(r => ({ key: r.id, label: r.short, full: r.label })),
-  ];
+  const daily = dailyScores(state.entries);
+  const hasWeather = days.some(d => state.weather.has(d));
+  const rows = heatRows(hasWeather);
   const logged = days.filter(d => daily.has(d)).length;
 
   const labelW = 64, gap = 2;
   const avail = Math.min(window.innerWidth, 640) - 32 - 26 - labelW; // page + card padding
   const cell = Math.max(7, Math.floor((avail - gap * range) / range));
   const detail = h('p', { class: 'heat-detail' }, 'Tap a square to see the details.');
-
-  const grid = h('div', { class: 'heat' });
-  grid.style.gridTemplateColumns = `${labelW}px repeat(${range}, ${cell}px)`;
-  rows.forEach((row, ri) => {
-    grid.append(h('div', { class: 'heat-label' + (ri === GENERAL.length ? ' gap-top' : '') }, row.label));
-    for (const d of days) {
-      const dd = daily.get(d);
-      const v = dd ? (dd[row.key] || 0) : null;
-      grid.append(h('div', {
-        class: 'heat-cell' + (ri === GENERAL.length ? ' gap-top' : '') + (v === null ? ' nodata' : v === 0 ? ' zero' : ' sev-' + v),
-        'data-day': d, 'data-row': ri,
-      }));
-    }
-  });
-  // date labels underneath
-  grid.append(h('div', { class: 'heat-label' }));
-  const every = range <= 14 ? 2 : 7;
-  const firstLabel = Math.ceil(38 / (cell + gap)); // labels overflow leftwards; keep the first one clear of the row names
-  days.forEach((d, i) => grid.append(h('div', { class: 'heat-date' }, (range - 1 - i) % every === 0 && i >= firstLabel ? shortDate(d) : '')));
-
+  const grid = heatGrid({ days, daily, weather: state.weather, rows, cell, labelW });
   grid.addEventListener('click', e => {
     const c = e.target.closest('.heat-cell');
     if (!c) return;
     grid.querySelector('.heat-cell.sel')?.classList.remove('sel');
     c.classList.add('sel');
-    const row = rows[+c.dataset.row];
-    const dd = daily.get(c.dataset.day);
-    const when = parseDay(c.dataset.day).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-    detail.textContent = !dd ? `${when}: no check-in` : `${when}: ${row.full} ${dd[row.key] ? dd[row.key] + ' / 10' : 'clear'}`;
+    detail.textContent = describeCell(c.dataset.day, rows[+c.dataset.row], daily, state.weather);
   });
-
   const scroller = h('div', { class: 'heat-scroll' }, grid);
   requestAnimationFrame(() => { scroller.scrollLeft = scroller.scrollWidth; });
-
   const rangeBtn = n => h('button', { class: 'seg-btn' + (range === n ? ' on' : ''), onclick: () => { state.trendRange = n; render(); } }, `${n} days`);
 
+  const poems = state.entries.filter(e => e.type === 'poem').sort(byTime).reverse().slice(0, 12);
+  const poemRow = p => {
+    const bar = h('i', { class: 'sev-' + poemSev(p.score) });
+    bar.style.width = `${Math.max(3, (p.score / 28) * 100)}%`;
+    return h('button', { class: 'poem-row', onclick: () => openEntry(p) },
+      h('span', { class: 'poem-date' }, shortDate(p.day)),
+      h('span', { class: 'poem-bar' }, bar),
+      h('span', { class: 'poem-score' }, String(p.score)),
+      h('span', { class: 'poem-band' }, poemBand(p.score)));
+  };
+
   return h('div', { class: 'view' },
-    h('h1', {}, 'Trends'),
+    h('div', { class: 'title-row' }, h('h1', {}, 'Trends'), h('button', { class: 'btn primary small', onclick: openReport }, icon('doc'), 'Report')),
     h('div', { class: 'seg' }, rangeBtn(14), rangeBtn(30), rangeBtn(90)),
     h('p', { class: 'small muted' }, `Checked in on ${logged} of the last ${range} days. Each square is the worst score that day.`),
-    h('div', { class: 'card heat-card' },
-      scroller,
-      detail,
-      h('div', { class: 'legend' },
-        h('span', { class: 'legend-item' }, h('i', { class: 'heat-cell nodata' }), 'No check-in'),
-        h('span', { class: 'legend-item' }, h('i', { class: 'heat-cell zero' }), 'Clear'),
-        h('span', { class: 'legend-item' }, '1', h('span', { class: 'ramp' }, Array.from({ length: 10 }, (_, i) => h('i', { class: 'sev-' + (i + 1) }))), '10'))),
-    h('p', { class: 'small muted' }, 'Pattern-finding (which foods or products line up with flare-ups) comes in a later version, once there\'s enough data.'));
+    h('div', { class: 'card heat-card' }, scroller, detail, heatLegend(hasWeather)),
+    h('h3', { class: 'section' }, 'Weekly eczema score (POEM)'),
+    poems.length
+      ? h('div', { class: 'card poem-list' }, poems.map(poemRow))
+      : h('p', { class: 'empty' }, 'No weekly scores yet. It takes about a minute.'),
+    h('button', { class: 'btn wide', onclick: startPoem }, icon('clipboard'), "Do this week's score"),
+    h('p', { class: 'small muted' }, "Pattern-finding (which foods, products or weather line up with flare-ups) comes in a later version, once there's enough data."));
+}
+
+// ---------- weekly POEM ----------
+
+const lastPoem = () => state.entries.filter(e => e.type === 'poem').sort(byTime).at(-1);
+function startPoem() { openEntry({ ...newEntry('poem'), day: dayKey(), time: timeKey() }, true); }
+
+function openPoem(entry, isNew) {
+  const answers = entry.answers ? [...entry.answers] : Array(POEM_QUESTIONS.length).fill(null);
+  const sheet = openSheet(isNew ? 'Weekly eczema score' : 'Edit weekly score', { full: true });
+  const total = h('div', { class: 'poem-total' });
+  const drawTotal = () => {
+    const done = answers.filter(a => a != null).length;
+    const score = answers.reduce((s, a) => s + (a || 0), 0);
+    const complete = done === answers.length;
+    total.replaceChildren(
+      h('strong', {}, complete ? `${score} / 28` : `${done} of ${answers.length} answered`),
+      h('span', {}, complete ? poemBand(score) : 'Answer every question to get your score'));
+  };
+  const questions = POEM_QUESTIONS.map((q, qi) => {
+    const opts = h('div', { class: 'poem-opts' });
+    const draw = () => opts.replaceChildren(...POEM_OPTIONS.map((label, oi) =>
+      h('button', { class: 'poem-opt' + (answers[qi] === oi ? ' on' : ''), onclick: () => { answers[qi] = oi; draw(); drawTotal(); } }, label)));
+    draw();
+    return h('div', { class: 'poem-q' }, h('p', {}, h('strong', {}, `${qi + 1}. `), q), opts);
+  });
+  drawTotal();
+  sheet.add(
+    h('p', { class: 'muted' }, 'Think about the last 7 days.'),
+    questions,
+    total,
+    h('p', { class: 'small muted' }, POEM_CREDIT));
+  addFooter(sheet, {
+    onSave: async () => {
+      if (answers.some(a => a == null)) { toast('Answer all 7 questions first'); return; }
+      Object.assign(entry, { answers, score: answers.reduce((s, a) => s + a, 0) });
+      await saveEntry(entry);
+      sheet.close(); render(); toast(`Weekly score saved: ${entry.score} / 28`);
+    },
+    onDelete: isNew ? null : () => confirmAndDelete(sheet, 'weekly score', () => removeEntry(entry)),
+  });
+}
+
+// ---------- specialist report ----------
+
+function downloadFile(file) {
+  const href = URL.createObjectURL(file);
+  const a = h('a', { href, download: file.name, class: 'visually-hidden' });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 60000);
+}
+
+function openReport() {
+  const firstDay = state.entries.map(e => e.day).sort()[0] || dayKey();
+  let range = state.reportRange || 90;
+  let current = null;
+  let file = null;
+  let buildId = 0;
+  const fullURLs = [];
+  const sheet = openSheet('Specialist report', { full: true, onClose: () => fullURLs.forEach(u => URL.revokeObjectURL(u)) });
+  sheet.el.classList.add('report-sheet');
+
+  const seg = h('div', { class: 'seg' });
+  const nameInput = h('input', { type: 'text', placeholder: 'Optional', value: setting('reportName') || '', autocomplete: 'name', autocapitalize: 'words' });
+  nameInput.addEventListener('change', () => { saveSetting('reportName', nameInput.value.trim()); draw(); });
+  const preview = h('div', { class: 'report-preview' });
+  const status = h('p', { class: 'small muted center' });
+  const shareBtn = h('button', { class: 'btn primary grow', disabled: true }, icon('share'), 'Share file');
+  const printBtn = h('button', { class: 'btn' }, icon('printer'), 'Print / PDF');
+
+  const photoImg = (id, full, cls) => {
+    const img = h('img', { class: cls, alt: '', 'data-photo-id': id, 'data-full': full ? '1' : null });
+    photoURL(id, full).then(u => { if (!u) return; img.src = u; if (full) fullURLs.push(u); });
+    return img;
+  };
+
+  async function prepareFile() {
+    const id = ++buildId;
+    file = null;
+    shareBtn.disabled = true;
+    status.textContent = 'Preparing the file…';
+    try {
+      const css = await (await fetch('css/report.css')).text();
+      const html = await reportFile(current.el, { css, title: `Skin diary report ${current.from} to ${current.to}`, getPhoto: pid => db.get('photos', pid) });
+      if (id !== buildId) return;
+      file = new File([html], `Skin-diary-report-${current.from}-to-${current.to}.html`, { type: 'text/html' });
+      shareBtn.disabled = false;
+      status.textContent = `File ready (${fmtBytes(file.size)}). It opens in any web browser and can be emailed or printed.`;
+    } catch (err) {
+      console.error(err);
+      if (id === buildId) status.textContent = "Couldn't prepare the file: " + err.message;
+    }
+  }
+
+  function draw() {
+    const to = dayKey();
+    const from = range === 'all' ? (firstDay < to ? firstDay : to) : addDays(to, -(range - 1));
+    seg.replaceChildren(...[[30, '30 days'], [90, '90 days'], ['all', 'All time']].map(([v, label]) =>
+      h('button', { class: 'seg-btn' + (range === v ? ' on' : ''), onclick: () => { range = v; state.reportRange = v; draw(); } }, label)));
+    current = { from, to, el: buildReport({ entries: state.entries, products: state.products, weather: state.weather, from, to, name: nameInput.value.trim(), photoImg }) };
+    preview.replaceChildren(current.el);
+    prepareFile();
+  }
+
+  shareBtn.addEventListener('click', guard(async () => {
+    if (!file) return;
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); }
+      catch (err) { if (err.name !== 'AbortError') toast('Sharing failed: ' + err.message, 4000); }
+    } else {
+      downloadFile(file);
+    }
+  }));
+  printBtn.addEventListener('click', () => {
+    const root = document.documentElement;
+    const done = () => { sheet.el.classList.remove('print-target'); root.classList.remove('printing'); window.removeEventListener('afterprint', done); };
+    sheet.el.classList.add('print-target');
+    root.classList.add('printing');
+    window.addEventListener('afterprint', done);
+    window.print();
+  });
+
+  sheet.add(
+    h('div', { class: 'report-controls' }, seg, field('Name on report', nameInput)),
+    status,
+    preview);
+  sheet.footer.append(printBtn, shareBtn);
+  draw();
+}
+
+// ---------- weather ----------
+
+let weatherJob = null;
+function refreshWeather({ force = false, full = false } = {}) {
+  const cfg = setting('weather');
+  if (!cfg?.enabled) return Promise.resolve(false);
+  if (!force && Date.now() - (setting('weatherFetched') || 0) < 3 * 3600e3) return Promise.resolve(false);
+  if (weatherJob) return weatherJob;
+  weatherJob = (async () => {
+    const today = dayKey();
+    const known = [...state.weather.keys()].filter(d => d < today).sort();
+    // First time (or new location): the past 2 months. After that, just the days since the last update.
+    // (Open-Meteo's forecast service is only reliable up to ~61 days back.)
+    const past = full || !known.length ? 61 : Math.min(61, Math.max(2, daysBetween(known.at(-1), today) + 1));
+    const days = (await fetchWeatherDays(cfg.lat, cfg.lon, past)).map(d => ({ ...d, fetched: Date.now() }));
+    await db.putMany('weather', days);
+    for (const d of days) state.weather.set(d.day, d);
+    await saveSetting('weatherFetched', Date.now());
+    return true;
+  })().finally(() => { weatherJob = null; });
+  return weatherJob;
+}
+
+async function backgroundWeather() {
+  try {
+    if (await refreshWeather() && (state.tab === 'today' || state.tab === 'trends')) render();
+  } catch (err) {
+    console.info('Weather update skipped:', err.message);
+  }
+}
+
+function weatherCard(day) {
+  const w = state.weather.get(day);
+  if (!w && !setting('weather')?.enabled) return null;
+  return h('div', { class: 'card weather-card' },
+    h('div', { class: 'card-row' }, icon('sun'), h('strong', {}, 'Weather')),
+    h('p', { class: 'small muted' }, w ? weatherText(w) : 'Not loaded yet. It updates when you open the app with internet.'));
+}
+
+function openWeatherSetup() {
+  const sheet = openSheet('Weather', { full: true });
+  const status = h('p', { class: 'small muted' });
+  const results = h('div', { class: 'list hidden' });
+  const query = h('input', { type: 'text', placeholder: 'Town or suburb', autocomplete: 'off', enterkeyhint: 'search' });
+
+  const choose = guard(async place => {
+    status.textContent = 'Loading weather for the past 2 months…';
+    await saveSetting('weather', { enabled: true, lat: place.lat, lon: place.lon, label: place.label });
+    try {
+      await refreshWeather({ force: true, full: true });
+      sheet.close(); render(); toast('Weather is on');
+    } catch (err) {
+      status.textContent = `Weather is on, but loading failed (${err.message}). It will retry next time you open the app.`;
+    }
+  });
+  const search = guard(async () => {
+    const name = query.value.trim();
+    if (!name) return;
+    status.textContent = 'Searching…';
+    try {
+      const places = await searchPlaces(name);
+      status.textContent = places.length ? 'Tap your area:' : 'No matches. Try a nearby larger town.';
+      results.replaceChildren(...places.map(p => h('button', { class: 'list-row', onclick: () => choose(p) }, h('span', {}, p.label))));
+      results.classList.toggle('hidden', !places.length);
+    } catch (err) {
+      status.textContent = 'Search failed: ' + err.message;
+    }
+  });
+  query.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); search(); } });
+  const useLocation = guard(async () => {
+    if (!navigator.geolocation) { status.textContent = 'Location is not available on this device.'; return; }
+    status.textContent = 'Finding your location…';
+    const pos = await new Promise(resolve => navigator.geolocation.getCurrentPosition(resolve, err => {
+      status.textContent = "Couldn't get your location" + (err.code === 1 ? ' (permission denied). Search for your town instead.' : '.');
+      resolve(null);
+    }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 3600000 }));
+    if (!pos) return;
+    const lat = roundCoord(pos.coords.latitude), lon = roundCoord(pos.coords.longitude);
+    await choose({ lat, lon, label: `your area (${lat}, ${lon})` });
+  });
+
+  sheet.add(
+    h('p', {}, 'Adds each day\'s temperature, humidity, rain, UV and air quality (PM2.5) to your diary. Dry air, heat and sweat are common eczema triggers.'),
+    h('div', { class: 'note-banner' }, h('span', {},
+      'Weather comes from Open-Meteo, a free service with no account. It only receives a rough location, rounded to about 10 km, and never anything from your diary. Pollen data is only available in Europe.')),
+    h('button', { class: 'btn wide', onclick: useLocation }, 'Use my current location'),
+    h('p', { class: 'small muted center' }, 'or search for your town'),
+    h('div', { class: 'add-row' }, query, h('button', { class: 'btn primary', onclick: search }, 'Search')),
+    status,
+    results);
 }
 
 // ================= Settings, backup, restore =================
 
+function weatherSettingsCard() {
+  const cfg = setting('weather');
+  const update = guard(async () => {
+    try { await refreshWeather({ force: true }); render(); toast('Weather updated'); }
+    catch (err) { toast("Couldn't update the weather: " + err.message, 4000); }
+  });
+  const turnOff = guard(async () => { await saveSetting('weather', { ...cfg, enabled: false }); render(); toast('Weather turned off. Past weather is kept.'); });
+  return h('section', { class: 'card' },
+    h('div', { class: 'card-row' }, icon('sun'), h('h2', {}, 'Weather')),
+    cfg?.enabled
+      ? [h('p', {}, 'Adding daily weather for ', h('strong', {}, cfg.label), '.'),
+        h('p', { class: 'small muted' }, `Last updated: ${whenText(setting('weatherFetched'))}. Source: Open-Meteo.`),
+        h('div', { class: 'stack' },
+          h('button', { class: 'btn wide', onclick: update }, 'Update now'),
+          h('button', { class: 'btn wide', onclick: openWeatherSetup }, 'Change location'),
+          h('button', { class: 'btn wide danger-ghost', onclick: turnOff }, 'Turn off'))]
+      : [h('p', { class: 'small' }, 'Off. Adds daily temperature, humidity, rain, UV and air quality to your diary, using your rough location.'),
+        h('button', { class: 'btn wide primary', onclick: openWeatherSetup }, 'Set up weather')]);
+}
+
 function viewSettings() {
-  const key = setting('backupKey');
   const storageLine = h('p', { class: 'small muted' }, 'Checking storage…');
   (async () => {
     try {
@@ -698,13 +947,13 @@ function viewSettings() {
 
     h('section', { class: 'card' },
       h('div', { class: 'card-row' }, icon('cloud'), h('h2', {}, 'Backup to Google Drive')),
-      key
-        ? h('p', {}, 'Encrypted backups are on. Last backup: ', h('strong', {}, whenText(setting('lastBackup'))), '.')
-        : h('p', {}, 'Set a passphrase to turn on encrypted backups. You\'ll back up with two taps a day.'),
+      h('p', {}, 'Last backup: ', h('strong', {}, whenText(setting('lastBackup'))), '.'),
+      h('p', { class: 'small muted' }, 'Each backup is a normal .zip file. Open it on any phone or computer to see your diary as spreadsheets (entries.csv, products.csv) plus your photos.'),
       h('div', { class: 'stack' },
-        key ? h('button', { class: 'btn primary wide', onclick: openBackup }, 'Back up now') : null,
-        h('button', { class: 'btn wide' + (key ? '' : ' primary'), onclick: () => openPassphraseSetup() }, key ? 'Change passphrase' : 'Set backup passphrase'),
+        h('button', { class: 'btn primary wide', onclick: openBackup }, 'Back up now'),
         h('button', { class: 'btn wide', onclick: openRestore }, 'Restore from a backup'))),
+
+    weatherSettingsCard(),
 
     h('section', { class: 'card' },
       h('h2', {}, 'Daily reminders'),
@@ -717,8 +966,9 @@ function viewSettings() {
     h('section', { class: 'card' },
       h('div', { class: 'card-row' }, icon('lock'), h('h2', {}, 'Privacy')),
       h('ul', { class: 'steps small' },
-        h('li', {}, 'Your diary is stored only on this iPhone. The app has no account and no tracking, and it is locked so it cannot send data to any server.'),
-        h('li', {}, 'Backups are encrypted (AES-256) with your passphrase before they leave the phone, so Google can\'t read them.'),
+        h('li', {}, 'Your diary is stored only on this iPhone. The app has no account and no tracking, and it is locked so it cannot send your diary to any server.'),
+        h('li', {}, 'If weather is on, the app contacts Open-Meteo with a rough location only (about 10 km). Nothing from the diary is sent.'),
+        h('li', {}, 'Backups are readable files, so anyone who can get into your Google Drive can open them. Keep 2-step verification on your Google account.'),
         h('li', {}, 'Use a passcode or Face ID on your iPhone. That is what protects the data stored on the phone itself.'))),
 
     h('section', { class: 'card' },
@@ -734,41 +984,9 @@ function viewSettings() {
     h('p', { class: 'small muted center' }, `Seb's Symptoms ${APP_VERSION}`));
 }
 
-function openPassphraseSetup(afterSave) {
-  const existing = setting('backupKey');
-  const sheet = openSheet(existing ? 'Change passphrase' : 'Backup passphrase', { full: true });
-  const p1 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 10 characters' });
-  const p2 = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Type it again' });
-  const status = h('p', { class: 'small muted' });
-  sheet.add(
-    h('p', {}, 'Your backups are locked with this passphrase. Without it, nobody can open them: not Google, not anyone who finds the file.'),
-    h('div', { class: 'note-banner warn' }, h('span', {}, h('strong', {}, 'There is no "forgot passphrase". '), 'If you lose it, old backups can\'t be opened. Save it in the iPhone Passwords app or write it down somewhere safe.')),
-    existing ? h('p', { class: 'small muted' }, 'Changing it only affects new backups. Old backup files still need the old passphrase.') : null,
-    h('p', { class: 'small muted' }, 'Tip: four random words is strong and easy to remember, e.g. "otter lamp river cactus".'),
-    field('Passphrase', p1),
-    field('Confirm', p2),
-    status);
-  addFooter(sheet, {
-    saveLabel: 'Save passphrase',
-    onSave: async () => {
-      if (p1.value.length < 10) { toast('Use at least 10 characters'); return; }
-      if (p1.value !== p2.value) { toast("The two passphrases don't match"); return; }
-      status.textContent = 'Securing… (takes a second)';
-      const salt = bk.newSalt();
-      const iterations = bk.DEFAULT_ITERATIONS;
-      const keyRaw = await bk.deriveKeyRaw(p1.value, salt, iterations);
-      await saveSetting('backupKey', { keyRaw, salt, iterations, setAt: Date.now() });
-      sheet.close(); render(); toast('Passphrase saved');
-      if (afterSave) afterSave(); else if (!existing && state.entries.length) openBackup();
-    },
-  });
-}
-
 async function openBackup() {
-  const keyRec = setting('backupKey');
-  if (!keyRec) { openPassphraseSetup(); return; }
-  const sheet = openSheet('Back up', { backdropClose: false });
-  const status = h('p', { class: 'center' }, 'Encrypting your diary…');
+  const sheet = openSheet('Back up');
+  const status = h('p', { class: 'center' }, 'Preparing your backup…');
   const btn = h('button', { class: 'btn primary wide', disabled: true }, 'Save to Google Drive');
   sheet.add(
     status, btn,
@@ -776,13 +994,14 @@ async function openBackup() {
       h('li', {}, 'Tap the button above.'),
       h('li', {}, 'In the share menu choose Drive (or Save to Files, then Google Drive).'),
       h('li', {}, 'Pick your backup folder and tap Upload.')),
-    h('p', { class: 'small muted' }, 'The file is locked with your passphrase before it leaves this phone.'));
+    h('p', { class: 'small muted' }, 'The backup is a normal zip file with spreadsheets and photos inside.'));
 
   let file;
   try {
+    await new Promise(r => setTimeout(r, 50)); // let the sheet appear before the work starts
     const photos = await db.getAll('photos');
-    const bytes = await bk.createBackup({ entries: state.entries, products: state.products, photos, keyRaw: keyRec.keyRaw, salt: keyRec.salt, iterations: keyRec.iterations, appVersion: APP_VERSION });
-    file = new File([bytes], `SebsSymptoms-${dayKey()}-${timeKey().replace(':', '')}.ssbk`, { type: 'application/octet-stream' });
+    const zip = buildBackup({ entries: state.entries, products: state.products, photos, weather: [...state.weather.values()], appVersion: APP_VERSION });
+    file = new File([zip], `SebsSymptoms-${dayKey()}-${timeKey().replace(':', '')}.zip`, { type: 'application/zip' });
     status.textContent = `Ready: ${fmtBytes(file.size)} (${state.entries.length} entries, ${photos.length} photos)`;
   } catch (err) {
     console.error(err);
@@ -814,35 +1033,50 @@ async function openBackup() {
 function openRestore() {
   const sheet = openSheet('Restore from backup', { full: true });
   let file = null;
+  let legacy = false;
   const fileLabel = h('span', {}, 'Choose backup file');
-  const pass = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Backup passphrase' });
+  const pass = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Passphrase for that backup' });
+  const passField = field('Passphrase', pass, 'Only needed for older encrypted backups (.ssbk files).');
+  passField.classList.add('hidden');
   const status = h('p', { class: 'small muted' });
   sheet.add(
     h('div', { class: 'note-banner warn' }, h('span', {}, 'Restoring ', h('strong', {}, 'replaces everything'), ' currently on this phone with the contents of the backup.')),
-    h('button', { class: 'btn wide', onclick: async () => {
+    h('button', { class: 'btn wide', onclick: guard(async () => {
       const f = await pickFile('');
-      if (f) { file = f; fileLabel.textContent = f.name; }
-    } }, fileLabel),
-    field('Passphrase', pass),
+      if (!f) return;
+      file = f;
+      fileLabel.textContent = f.name;
+      legacy = isLegacyBackup(new Uint8Array(await f.slice(0, 8).arrayBuffer()));
+      passField.classList.toggle('hidden', !legacy);
+      status.textContent = '';
+    }) }, fileLabel),
+    passField,
     status);
   addFooter(sheet, {
     saveLabel: 'Restore',
     onSave: async () => {
       if (!file) { toast('Choose a backup file first'); return; }
-      if (!pass.value) { toast('Enter the passphrase'); return; }
+      if (legacy && !pass.value) { toast('Enter the passphrase for this backup'); return; }
       if (state.entries.length && !await confirmSheet('Replace all data?', `This phone has ${state.entries.length} entries. They will be replaced by the backup.`, 'Replace', true)) return;
-      status.textContent = 'Unlocking…';
-      let result;
-      try { result = await bk.openBackup(await file.arrayBuffer(), pass.value); }
-      catch (err) { status.textContent = err.message; return; }
-      const { data } = result;
-      await db.replaceAll({ entries: data.entries, products: data.products, photos: data.photos });
-      await saveSetting('backupKey', { keyRaw: result.keyRaw, salt: result.salt, iterations: result.iterations, setAt: Date.now() });
+      let data;
+      try {
+        status.textContent = 'Reading backup…';
+        data = legacy
+          ? await openLegacyBackup(await file.arrayBuffer(), pass.value)
+          : await parseBackupZip(file, msg => { status.textContent = msg; });
+      } catch (err) {
+        console.error(err);
+        status.textContent = err.message;
+        return;
+      }
+      await db.replaceAll(data);
       state.entries = data.entries;
       state.products = data.products;
+      state.weather = new Map(data.weather.map(w => [w.day, w]));
       thumbURLs.clear();
       sheet.close(); render();
-      toast(`Restored ${data.entries.length} entries and ${data.photos.length} photos`, 3500);
+      const warn = data.missing.length ? ` (${data.missing.length} photo files were missing from the zip)` : '';
+      toast(`Restored ${data.entries.length} entries and ${data.photos.length} photos${warn}`, 4000);
     },
   });
 }
@@ -851,18 +1085,24 @@ function openDeleteAll() {
   const sheet = openSheet('Delete everything?', { full: true });
   const confirmInput = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'characters', placeholder: 'DELETE' });
   sheet.add(
-    h('p', {}, 'This permanently removes every entry, photo, product and your backup passphrase from this phone. Backup files you already saved are not affected.'),
+    h('p', {}, 'This permanently removes every entry, photo and product from this phone. Backup files you already saved are not affected.'),
     field('Type DELETE to confirm', confirmInput));
   sheet.footer.append(h('button', { class: 'btn danger grow', onclick: guard(async () => {
     if (confirmInput.value.trim().toUpperCase() !== 'DELETE') { toast('Type DELETE to confirm'); return; }
     await db.clearEverything();
-    state.entries = []; state.products = []; state.settings = new Map();
+    state.entries = []; state.products = []; state.settings = new Map(); state.weather = new Map();
     thumbURLs.clear();
     sheet.close(); go('today'); toast('All data deleted');
   }) }, 'Delete everything'));
 }
 
 // ================= startup =================
+
+function applyUpdate() {
+  if (state.updating || !state.updateWorker) return;
+  state.updating = true;
+  state.updateWorker.postMessage('skipWaiting');
+}
 
 async function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
@@ -874,8 +1114,8 @@ async function registerServiceWorker() {
       const w = reg.installing;
       w?.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
     });
-    let reloading = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+    // Reload only when the person tapped "Update" (not when offline mode first switches on).
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (state.updating) location.reload(); });
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
   } catch (err) {
     console.warn('Offline support unavailable:', err);
@@ -885,6 +1125,7 @@ async function registerServiceWorker() {
 // If the app is left open overnight, roll "Today" over to the new day.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  backgroundWeather();
   const now = dayKey();
   if (now !== state.lastToday) {
     if (state.day === state.lastToday) state.day = now;
@@ -897,16 +1138,19 @@ window.addEventListener('unhandledrejection', e => { console.error(e.reason); to
 
 async function init() {
   try {
-    const [entries, products, settings] = await Promise.all([db.getAll('entries'), db.getAll('products'), db.getAll('settings')]);
+    const [entries, products, settings, weather] = await Promise.all([db.getAll('entries'), db.getAll('products'), db.getAll('settings'), db.getAll('weather')]);
+    state.weather = new Map(weather.map(w => [w.day, w]));
     state.entries = entries;
     state.products = products;
     state.settings = new Map(settings.map(s => [s.key, s.value]));
+    if (state.settings.has('backupKey')) { await db.del('settings', 'backupKey'); state.settings.delete('backupKey'); }
   } catch (err) {
     mainEl.replaceChildren(h('div', { class: 'view' }, banner('warn', "Couldn't open storage", err.message)));
     return;
   }
   render();
   navigator.storage?.persist?.().catch(() => {});
+  backgroundWeather();
   registerServiceWorker();
 }
 

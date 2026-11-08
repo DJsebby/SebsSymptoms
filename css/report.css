@@ -1,0 +1,74 @@
+/* Specialist report. Always light (it's meant for paper), and self-contained:
+   this file is also embedded in the exported HTML report. Everything is scoped to .rpt */
+
+.rpt {
+  --sev1: #fde3da; --sev2: #fbc9b8; --sev3: #f7ad96; --sev4: #f19174; --sev5: #e87554;
+  --sev6: #d95b3a; --sev7: #c2432a; --sev8: #a4321f; --sev9: #852416; --sev10: #66180e;
+  --hum1: #e3eefc; --hum2: #cde2fb; --hum3: #b7d3f6; --hum4: #9ec5f4; --hum5: #86b6ef;
+  --hum6: #6da7ec; --hum7: #5598e7; --hum8: #3987e5; --hum9: #2a78d6; --hum10: #1c5cab;
+  color-scheme: light;
+  background: #ffffff;
+  color: #1c1b19;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+  padding: 22px 20px;
+  border-radius: 12px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.rpt * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.rpt h1 { font-size: 22px; line-height: 1.2; margin: 0 0 4px; letter-spacing: -.01em; }
+.rpt h2 { font-size: 15px; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #e2dfd8; }
+.rpt h3 { font-size: 13px; margin: 12px 0 6px; }
+.rpt p { margin: 6px 0; }
+.rpt .rpt-sub { font-size: 14px; font-weight: 600; color: #3d3c38; }
+.rpt .note { font-size: 12px; color: #57554f; }
+
+.rpt table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rpt th, .rpt td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #eeece7; vertical-align: top; }
+.rpt th { font-weight: 600; color: #57554f; }
+.rpt .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.rpt .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.rpt .stat { border: 1px solid #e2dfd8; border-radius: 10px; padding: 8px 10px; }
+.rpt .stat b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+.rpt .stat span { font-size: 12px; color: #57554f; }
+
+/* day-by-day grid */
+.rpt .sev-1 { --c: var(--sev1); } .rpt .sev-2 { --c: var(--sev2); } .rpt .sev-3 { --c: var(--sev3); } .rpt .sev-4 { --c: var(--sev4); } .rpt .sev-5 { --c: var(--sev5); }
+.rpt .sev-6 { --c: var(--sev6); } .rpt .sev-7 { --c: var(--sev7); } .rpt .sev-8 { --c: var(--sev8); } .rpt .sev-9 { --c: var(--sev9); } .rpt .sev-10 { --c: var(--sev10); }
+.rpt .hum-1 { --c: var(--hum1); } .rpt .hum-2 { --c: var(--hum2); } .rpt .hum-3 { --c: var(--hum3); } .rpt .hum-4 { --c: var(--hum4); } .rpt .hum-5 { --c: var(--hum5); }
+.rpt .hum-6 { --c: var(--hum6); } .rpt .hum-7 { --c: var(--hum7); } .rpt .hum-8 { --c: var(--hum8); } .rpt .hum-9 { --c: var(--hum9); } .rpt .hum-10 { --c: var(--hum10); }
+.rpt .rpt-heat { margin: 8px 0 14px; break-inside: avoid; }
+.rpt .rh { display: grid; gap: 1.5px; grid-auto-rows: 14px; }
+.rpt .rh-label { font-size: 10.5px; color: #57554f; display: flex; align-items: center; white-space: nowrap; overflow: hidden; }
+.rpt .rh-cell { border-radius: 2px; background: var(--c, #f1efeb); }
+.rpt .rh-cell.zero, .rpt .lg.zero { background: #cfe1d9; }
+.rpt .rh-cell.nodata, .rpt .lg.nodata { background: #f3f1ed; }
+.rpt .lg.nodata { box-shadow: inset 0 0 0 1px #e2dfd8; }
+.rpt .gap-top { margin-top: 5px; }
+.rpt .rh-date { font-size: 9.5px; color: #8a877f; white-space: nowrap; direction: rtl; text-align: right; line-height: 14px; }
+.rpt .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: #57554f; align-items: center; }
+.rpt .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.rpt .lg { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.rpt .ramp { display: inline-flex; gap: 1px; }
+.rpt .ramp i { width: 10px; height: 12px; display: inline-block; background: var(--c); }
+
+.rpt .rpt-product { padding: 6px 0 10px; border-bottom: 1px solid #eeece7; break-inside: avoid; }
+.rpt .label-photo { display: block; max-width: 70%; max-height: 420px; border-radius: 8px; margin-top: 6px; }
+
+.rpt .photos { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rpt figure { margin: 0; break-inside: avoid; }
+.rpt figure img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: #f1efeb; }
+.rpt figcaption { font-size: 11px; color: #57554f; margin-top: 3px; }
+
+.rpt .rpt-foot { margin-top: 26px; padding-top: 8px; border-top: 1px solid #e2dfd8; font-size: 11px; color: #8a877f; }
+
+@media (max-width: 480px) {
+  .rpt { padding: 16px 12px; }
+  .rpt .photos { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media print {
+  @page { margin: 14mm; }
+  .rpt { padding: 0; border-radius: 0; }
+  .rpt section, .rpt tr, .rpt figure { break-inside: avoid; }
+}

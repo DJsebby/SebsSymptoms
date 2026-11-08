@@ -46,6 +46,11 @@ const ICONS = {
   plus: ['M12 5v14', 'M5 12h14'],
   cloud: ['M7 18.5a4 4 0 0 1-.6-7.95A6 6 0 0 1 17.9 9.6a4.5 4.5 0 0 1-.4 8.9z', 'M12 16v-5', 'M9.5 13.5L12 11l2.5 2.5'],
   lock: ['M6.5 11h11v9h-11z', 'M8.5 11V8a3.5 3.5 0 0 1 7 0v3'],
+  clipboard: ['M9 3.5h6v3H9z', 'M9 5H6.5A1.5 1.5 0 0 0 5 6.5v13A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5v-13A1.5 1.5 0 0 0 17.5 5H15', 'M8.5 11.5h7', 'M8.5 15.5h5'],
+  sun: ['M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8', 'M12 2.5v2', 'M12 19.5v2', 'M5.3 5.3l1.4 1.4', 'M17.3 17.3l1.4 1.4', 'M2.5 12h2', 'M19.5 12h2', 'M5.3 18.7l1.4-1.4', 'M17.3 6.7l1.4-1.4'],
+  doc: ['M7 3.5h7l4 4V20.5H7z', 'M14 3.5v4h4', 'M10 12h5', 'M10 15.5h5'],
+  share: ['M12 15V4', 'M8.5 7.5L12 4l3.5 3.5', 'M6 11v8.5h12V11'],
+  printer: ['M7 9V4h10v5', 'M7 17H4.5v-6.5A1.5 1.5 0 0 1 6 9h12a1.5 1.5 0 0 1 1.5 1.5V17H17', 'M7 14h10v6.5H7z'],
 };
 
 export function icon(name, cls = 'ic') {
@@ -117,6 +122,7 @@ export const dayKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth()
 export const timeKey = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 export function parseDay(key) { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d); }
 export function addDays(key, n) { const d = parseDay(key); d.setDate(d.getDate() + n); return dayKey(d); }
+export const daysBetween = (a, b) => Math.round((parseDay(b) - parseDay(a)) / 864e5);
 
 export function prettyDay(key) {
   const today = dayKey();

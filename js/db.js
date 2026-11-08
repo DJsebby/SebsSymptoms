@@ -1,9 +1,10 @@
 // IndexedDB storage. Everything lives on this device only.
-// Stores: entries (diary items), photos (image bytes), products (soaps/detergents), settings.
+// Stores: entries (diary items), photos (image bytes), products (soaps/detergents),
+// settings, weather (one summary per day).
 
 const DB_NAME = 'sebssymptoms';
-const DB_VERSION = 1;
-export const STORES = ['entries', 'photos', 'products', 'settings'];
+const DB_VERSION = 2;
+export const STORES = ['entries', 'photos', 'products', 'settings', 'weather'];
 
 let dbPromise;
 
@@ -11,17 +12,25 @@ function open() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      // Upgrades only ever ADD stores, so existing diary data is never touched.
+      req.onupgradeneeded = event => {
         const db = req.result;
-        const entries = db.createObjectStore('entries', { keyPath: 'id' });
-        entries.createIndex('day', 'day');
-        db.createObjectStore('photos', { keyPath: 'id' });
-        db.createObjectStore('products', { keyPath: 'id' });
-        db.createObjectStore('settings', { keyPath: 'key' });
+        if (event.oldVersion < 1) {
+          const entries = db.createObjectStore('entries', { keyPath: 'id' });
+          entries.createIndex('day', 'day');
+          db.createObjectStore('photos', { keyPath: 'id' });
+          db.createObjectStore('products', { keyPath: 'id' });
+          db.createObjectStore('settings', { keyPath: 'key' });
+        }
+        if (event.oldVersion < 2) db.createObjectStore('weather', { keyPath: 'day' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => db.close(); // let a newer version of the app upgrade
+        resolve(db);
+      };
       req.onerror = () => reject(req.error);
-      req.onblocked = () => reject(new Error('Storage is busy — close other copies of the app and retry.'));
+      req.onblocked = () => console.warn('Storage upgrade waiting for another open copy of the app to close.');
     });
   }
   return dbPromise;
@@ -47,16 +56,29 @@ export const getAll = store => run(store, 'readonly', s => s.getAll());
 export const put = (store, value) => run(store, 'readwrite', s => s.put(value));
 export const del = (store, key) => run(store, 'readwrite', s => s.delete(key));
 
-// Replace all diary data in one all-or-nothing transaction (used by restore).
-export async function replaceAll({ entries, products, photos }) {
+export async function putMany(store, values) {
   const db = await open();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['entries', 'products', 'photos'], 'readwrite');
-    const E = tx.objectStore('entries'), P = tx.objectStore('products'), F = tx.objectStore('photos');
-    E.clear(); P.clear(); F.clear();
+    const tx = db.transaction(store, 'readwrite');
+    const s = tx.objectStore(store);
+    for (const v of values) s.put(v);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Save was cancelled'));
+  });
+}
+
+// Replace all diary data in one all-or-nothing transaction (used by restore).
+export async function replaceAll({ entries, products, photos, weather = [] }) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['entries', 'products', 'photos', 'weather'], 'readwrite');
+    const E = tx.objectStore('entries'), P = tx.objectStore('products'), F = tx.objectStore('photos'), W = tx.objectStore('weather');
+    E.clear(); P.clear(); F.clear(); W.clear();
     for (const e of entries) E.put(e);
     for (const p of products) P.put(p);
     for (const f of photos) F.put(f);
+    for (const w of weather) W.put(w);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Restore was cancelled'));

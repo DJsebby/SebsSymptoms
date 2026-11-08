@@ -23,7 +23,13 @@ export const GENERAL = [
   { id: 'sinus', label: 'Sinus' },
 ];
 
-const ALL = [...REGIONS, ...GENERAL];
+// Possible flare factors scored in the check-in. Higher = worse, like the symptoms.
+export const FACTORS = [
+  { id: 'sleep', label: 'Bad sleep', short: 'Bad sleep', hint: '1 = slept well · 10 = barely slept' },
+  { id: 'stress', label: 'Stress', short: 'Stress', hint: '1 = calm · 10 = extremely stressed' },
+];
+
+const ALL = [...REGIONS, ...GENERAL, ...FACTORS];
 export const labelFor = id => (ALL.find(r => r.id === id) || { label: id }).label;
 export const shortLabel = id => { const r = ALL.find(x => x.id === id); return r ? (r.short || r.label) : id; };
 

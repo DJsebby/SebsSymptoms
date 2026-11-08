@@ -1,17 +1,24 @@
 // Offline support: caches the app's own files so it opens with no internet.
 // Bump VERSION whenever any app file changes, so phones pick up the update.
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.2.0';
 const CACHE = `sebssymptoms-${VERSION}`;
 const ASSETS = [
   './',
   './index.html',
   './css/app.css',
+  './css/report.css',
   './js/app.js',
   './js/ui.js',
   './js/db.js',
   './js/body.js',
   './js/images.js',
   './js/backup.js',
+  './js/legacy-backup.js',
+  './js/zip.js',
+  './js/heat.js',
+  './js/poem.js',
+  './js/weather.js',
+  './js/report.js',
   './manifest.webmanifest',
   './icons/icon-180.png',
   './icons/icon-192.png',
@@ -19,7 +26,8 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)));
+  // cache: 'reload' skips the browser's HTTP cache, so an update never mixes in stale old files.
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS.map(url => new Request(url, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', event => {
