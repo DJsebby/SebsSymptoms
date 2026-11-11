@@ -3,6 +3,7 @@
 //   entries.csv    one row per diary entry (opens in Excel, Numbers, Google Sheets)
 //   products.csv   detergents, soaps and creams with the dates used
 //   weather.csv    daily weather, if weather is turned on
+//   tests.csv      elimination tests (Triggers tab), if any
 //   data.json      everything in one file; the app restores from this
 //   photos/        symptom photos, named date_time_area
 //   labels/        ingredient-label photos for products
@@ -26,6 +27,7 @@ entries.csv   One row per diary entry. Opens in Excel, Numbers or Google Sheets.
               Weekly eczema score rows have a POEM score (0-28).
 products.csv  Detergents, soaps and creams, with the dates you used them.
 weather.csv   Daily weather for your area (if weather is turned on).
+tests.csv     Elimination tests from the Triggers tab (if any).
 photos/       Symptom photos, named date_time_area.
 labels/       Photos of product ingredient labels.
 data.json     Everything above in one file. The app restores from this.
@@ -80,7 +82,14 @@ function weatherCsv(weather) {
   return toCsv([head, ...rows]);
 }
 
-export function buildBackup({ entries, products, photos, weather = [], appVersion }) {
+function testsCsv(trials) {
+  const head = ['Without', 'Started', 'Ended', 'Planned days'];
+  const rows = [...trials].sort((a, b) => a.start.localeCompare(b.start)).map(t => [t.label, t.start, t.end || '', t.days]);
+  return toCsv([head, ...rows]);
+}
+
+// settings: { trials, groupExclusions } from the Triggers tab.
+export function buildBackup({ entries, products, photos, weather = [], settings = {}, appVersion }) {
   const known = new Set(photos.map(p => p.id));
   const fileFor = new Map();
   const sorted = [...entries].sort((a, b) => (a.day + a.time).localeCompare(b.day + b.time));
@@ -99,18 +108,20 @@ export function buildBackup({ entries, products, photos, weather = [], appVersio
     products: products.map(withFile),
     photos: photos.map(p => ({ id: p.id, file: fileFor.get(p.id), type: p.type, w: p.w, h: p.h, created: p.created })),
     weather: [...weather].sort((a, b) => a.day.localeCompare(b.day)),
+    settings: { trials: settings.trials || [], groupExclusions: settings.groupExclusions || {} },
   };
   return makeZip([
     { name: 'README.txt', data: README },
     { name: 'entries.csv', data: entriesCsv(sorted, fileFor) },
     { name: 'products.csv', data: productsCsv(products, fileFor) },
     ...(weather.length ? [{ name: 'weather.csv', data: weatherCsv(weather) }] : []),
+    ...(settings.trials?.length ? [{ name: 'tests.csv', data: testsCsv(settings.trials) }] : []),
     { name: 'data.json', data: JSON.stringify(data, null, 1) },
     ...photos.map(p => ({ name: fileFor.get(p.id), data: p.data })),
   ]);
 }
 
-// Reads a backup zip into { entries, products, photos } ready for the database.
+// Reads a backup zip into { entries, products, photos, weather, settings } ready for the database.
 export async function parseBackupZip(file, onProgress = () => {}) {
   const zip = await readZip(file);
   // Allow for the files sitting inside a folder (happens if it was re-zipped on a computer).
@@ -131,5 +142,6 @@ export async function parseBackupZip(file, onProgress = () => {}) {
     photos.push({ id: m.id, type: m.type, w: m.w, h: m.h, created: m.created, data: bytes.buffer, thumb });
   }
   const strip = ({ photoFile, ...rest }) => rest;
-  return { entries: data.entries.map(strip), products: (data.products || []).map(strip), photos, weather: data.weather || [], missing };
+  const settings = data.settings && typeof data.settings === 'object' ? data.settings : {};
+  return { entries: data.entries.map(strip), products: (data.products || []).map(strip), photos, weather: data.weather || [], settings, missing };
 }

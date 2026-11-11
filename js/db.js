@@ -132,14 +132,17 @@ export function write(ops) {
 }
 
 // Replaces all diary data in one all-or-nothing step (used by restore).
-export const replaceAll = ({ entries, products, photos, weather = [] }) =>
-  transact(['entries', 'products', 'photos', 'weather'], 'readwrite', tx => {
+// settings: [{ key, value }] to store alongside (other settings are left alone).
+export const replaceAll = ({ entries, products, photos, weather = [], settings = [] }) =>
+  transact(['entries', 'products', 'photos', 'weather', 'settings'], 'readwrite', tx => {
     const E = tx.objectStore('entries'), P = tx.objectStore('products'), F = tx.objectStore('photos'), W = tx.objectStore('weather');
     E.clear(); P.clear(); F.clear(); W.clear();
     for (const e of entries) E.put(e);
     for (const p of products) P.put(p);
     for (const f of photos) F.put(f);
     for (const w of weather) W.put(w);
+    const S = tx.objectStore('settings');
+    for (const s of settings) S.put(s);
   });
 
 export const clearEverything = () => transact(STORES, 'readwrite', tx => {

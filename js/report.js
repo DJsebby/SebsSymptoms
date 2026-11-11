@@ -6,6 +6,7 @@ import { h, addDays, parseDay, dayKey } from './ui.js';
 import { REGIONS, GENERAL, FACTORS } from './body.js';
 import { dailyScores, checkinsByDay, heatRows, heatGrid, heatLegend } from './heat.js';
 import { poemBand, POEM_CREDIT } from './poem.js';
+import { trialStats, TIERS, WINDOWS } from './insights.js';
 
 const fmt = d => parseDay(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 const fmtShort = d => parseDay(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
@@ -21,6 +22,42 @@ function table(head, rows, numCols = []) {
     h('tbody', {}, rows.map(r => h('tr', {}, r.map((c, i) => h('td', { class: cls(i) }, c))))));
 }
 const section = (title, ...kids) => h('section', { class: 'rpt-sec' }, h('h2', {}, title), kids);
+const signed = v => (Math.abs(v) < 0.05 ? '0.0' : (v > 0 ? '+' : '−') + Math.abs(v).toFixed(1));
+
+// Patterns from the Triggers analysis (run on this period), plus any elimination tests.
+function patternsSection(p, trials, entries, exclusions, from, to) {
+  if (!p) return null;
+  if (!p.ready) {
+    return section('Possible triggers', h('p', { class: 'note' },
+      `Not enough data in this period to look for patterns (it needs ${p.needDays} days with a check-in; this period has ${p.checkinDays}).`));
+  }
+  const linked = p.items.filter(x => ['strong', 'possible', 'weak'].includes(x.tier)).slice(0, 15);
+  const fine = p.items.filter(x => x.tier === 'fine');
+  const common = p.items.filter(x => x.tier === 'common');
+  const env = p.env.filter(e => e.tier !== 'unclear');
+  const tests = trials.filter(t => t.start <= to && (t.end || to) >= from).sort((a, b) => a.start.localeCompare(b.start));
+  const kind = x => ({ group: ' (food group)', activity: ' (activity)', product: ' (product)' })[x.kind] || '';
+  const short = { strong: 'Strong', possible: 'Possible', weak: 'Weak' };
+  return section('Possible triggers (patterns in the diary)',
+    h('p', { class: 'note' }, `How these were found: for each food, food group, activity and product, the daily score (highest of the day's check-ins) is compared with nearby days without it, after removing slow trends, at the delay (same day, next day or within 2 days) and symptom where it lines up best. Evidence comes from a permutation test (the item's dates are moved to other places in the diary and the search repeated) with false-discovery-rate control across the ${p.tested} items compared. "Change" is the estimated rise in points on the 0–10 scale, with its 90% range underneath. These are associations, not proof; products are compared period against period.`),
+    linked.length
+      ? table(['Item', 'Linked to', 'Change', 'Days', 'Evidence'], linked.map(x => [
+        x.label + kind(x), `${x.symptom.label}, ${x.kind === 'product' ? 'while in use' : WINDOWS[x.best].short}`,
+        [h('b', {}, signed(x.est)), h('br'), h('span', { class: 'range' }, `${signed(x.lo)} to ${signed(x.hi)}`)], String(x.days), short[x.tier]]), [2, 3])
+      : h('p', {}, 'Nothing stood out in this period.'),
+    fine.length ? h('p', { class: 'note' }, 'No sign of a problem (logged often, no rise afterwards): ' + fine.slice(0, 25).map(x => x.label + kind(x)).join(', ') + '.') : null,
+    common.length ? h('p', { class: 'note' }, 'Too common to judge (almost every day): ' + common.map(x => x.label + kind(x)).join(', ') + '.') : null,
+    env.length ? table(['Weather, sleep & stress', 'Pattern', 'Size', 'Evidence'],
+      env.map(e => [e.label, `${e.symptom.label} ${e.dir > 0 ? e.pos : e.neg}`, signed(e.eff), TIERS[e.tier]]), [2]) : null,
+    tests.length ? [
+      h('h3', {}, 'Elimination tests'),
+      table(['Without', 'Dates', 'Symptom', '3 weeks before', 'During', 'Logged anyway'], tests.map(t => {
+        const st = trialStats({ entries, trial: t, target: t.symptom, exclusions, today: to });
+        return [t.label, `${fmtShort(t.start)} – ${t.end ? fmtShort(t.end) : 'ongoing'}`, st.symptom.label, r1(st.before.avg), r1(st.during.avg), String(st.slips.length)];
+      }), [3, 4, 5]),
+      h('p', { class: 'note' }, 'Average daily score (highest check-in of each day). "Logged anyway" counts diary entries of the item during the test.'),
+    ] : null);
+}
 const stat = (value, label) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label));
 
 function itemDays(entries, type) {
@@ -40,7 +77,8 @@ function itemDays(entries, type) {
 }
 
 // photoImg(id, full, cls) must return an <img data-photo-id=…> (the app fills in the picture).
-export function buildReport({ entries, products, weather, from, to, name, photoImg }) {
+// patterns: analyze() run on this period (optional); trials: elimination tests.
+export function buildReport({ entries, products, weather, from, to, name, photoImg, patterns = null, trials = [], exclusions = {} }) {
   const days = [];
   for (let d = from; d <= to; d = addDays(d, 1)) days.push(d);
   const E = entries.filter(e => e.day >= from && e.day <= to).sort(byTime);
@@ -132,6 +170,8 @@ export function buildReport({ entries, products, weather, from, to, name, photoI
     poems.length ? section('Weekly eczema score (POEM)',
       table(['Week ending', 'Score (0–28)', 'Severity'], poems.map(p => [fmt(p.day), String(p.score), poemBand(p.score)]), [1]),
       h('p', { class: 'note' }, `${POEM_CREDIT} Bands: 0–2 clear or almost clear, 3–7 mild, 8–16 moderate, 17–24 severe, 25–28 very severe.`)) : null,
+
+    patternsSection(patterns, trials, entries, exclusions, from, to),
 
     prods.length ? section('Products in contact with skin', prods.map(p => h('div', { class: 'rpt-product' },
       h('p', {}, h('strong', {}, p.name), ` · ${p.category} · ${fmt(p.start)} – ${p.end ? fmt(p.end) : 'still using'}`),

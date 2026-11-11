@@ -9,8 +9,9 @@ A private, offline diary for tracking eczema, sinus symptoms and their possible 
 - **Photos of symptoms.** Shrunk to save space, with location data removed. They stay inside the app and don't go to your camera roll or iCloud Photos.
 - **Trends.** A colour grid of every area, symptom, sleep, stress and humidity over 14, 30 or 90 days, plus POEM history. Inside each day's square, time runs from midnight (left) to midnight (right), and the colour blends between that day's check-ins, so a flare at 5 pm that settled by 9 pm shows as a dark patch fading back to pale.
 - **Day details.** Tap any square to see that day as a chart of score against time, a table of every check-in, plus the weather, food, activities and products for that day.
+- **Triggers.** After 2 weeks of check-ins, ranks the foods, food groups (dairy, wheat, eggs …, guessed from what you type and correctable), activities and products that line up with flares. Each one shows which symptom or body area it affects, how soon (same day, next day or within 2 days), by how much, and how sure that is. Weather, sleep and stress are checked too. A guide suggests what to cut out first, and **3-week elimination tests** compare before and after and flag slip-ups. See [How the trigger analysis works](#how-the-trigger-analysis-works).
 - **Weather (optional).** Daily temperature, humidity, rain, UV and air quality (PM2.5) from Open-Meteo, for the past 2 months onwards.
-- **Specialist report.** One document for appointments covering a summary, most affected areas, the day-by-day grid, POEM, products with label photos, meds, activities, foods, weather, notes and photos. Print it, save it as a PDF, or share it as a file.
+- **Specialist report.** One document for appointments covering a summary, most affected areas, the day-by-day grid, POEM, possible triggers and elimination tests, products with label photos, meds, activities, foods, weather, notes and photos. Print it, save it as a PDF, or share it as a file.
 - **Backups to Google Drive.** Two taps a day saves a normal .zip file containing spreadsheets and photos.
 
 ## Privacy model
@@ -55,6 +56,7 @@ A backup is an ordinary `.zip` file. Double-click it on a computer, or tap it in
 | `entries.csv` | One row per entry. Check-ins have a 0–10 column for every symptom and body area (0 = none). Opens in Excel, Numbers or Google Sheets. |
 | `products.csv` | Detergents, soaps and creams, with start and stop dates. |
 | `weather.csv` | Daily weather, if weather is turned on. |
+| `tests.csv` | Elimination tests from the Triggers tab, if any. |
 | `photos/` | Symptom photos, named `date_time_area`. |
 | `labels/` | Ingredient-label photos. |
 | `data.json` | Everything in one file. The app restores from this. |
@@ -82,6 +84,9 @@ python3 -m http.server 8000   # then open http://localhost:8000
 | `js/zip.js` | Minimal zip writer and reader |
 | `js/legacy-backup.js` | Restores old encrypted `.ssbk` backups |
 | `js/heat.js` | The day-by-day colour grid (Trends and report) |
+| `js/insights.js` | The trigger analysis (no DOM; testable on its own) and elimination-test summaries |
+| `js/foods.js` | Food-name matching and the food groups (dairy, wheat, eggs …) |
+| `js/triggers.js` | The Triggers tab |
 | `js/poem.js` | POEM questions and severity bands |
 | `js/weather.js` | Open-Meteo weather, air quality and town search |
 | `js/report.js`, `css/report.css` | The specialist report |
@@ -91,6 +96,23 @@ python3 -m http.server 8000   # then open http://localhost:8000
 
 ### Planned
 - Importing past paper-diary data (CSV)
-- Correlation analysis: which foods, products, activities and weather line up with flare-ups, allowing for delayed reactions
+
+## How the trigger analysis works
+Everything runs on the phone. For each food, food group, activity and product:
+
+1. **Outcome.** Each day's highest score for every symptom and body area. By default every item is matched with the symptom it lines up with best ("Any symptom"); one symptom can also be chosen.
+2. **Timing.** Exposure windows of the same day (only counting things logged before that day's last check-in), by the next day, and within 2 days. The best-fitting window is kept.
+3. **Model.** A regression of the score on the exposure alongside a smooth trend (a penalised linear spline with knots every 14 days), so each item is compared with days around the same time and slow changes (season, treatment, a bad month) don't create false links. Products, which are used for weeks at a time, are compared period against period.
+4. **Chance check.** The item's dates are slid along the diary (circular shift) and the whole search (every window and symptom) is repeated on each copy. This respects flares that last several days and corrects for picking the best window and symptom. Weekly routines would land back on themselves when slid, so for those the same runs of days are placed at random instead. Beyond the range of the copies, p-values come from a widened exponential tail.
+5. **Shrinkage.** Estimates are pulled toward zero (normal prior, sd 0.8 points), more so for things seen on few days. The uncertainty is widened when the copies vary more than theory expects.
+6. **Labels.** *Strong* means a Benjamini–Hochberg FDR ≤ 10% across everything compared (weather, sleep and stress included), at least 28 check-in days, and an effect of at least 0.5 points. *Possible* means FDR ≤ 30% within its kind and p ≤ 0.05. *Weak hint* means p ≤ 0.1. *No sign of a problem* means the 90% range stays under +0.5. Products can only reach "possible", because one switch can't separate the product from anything else that changed at the same time.
+
+**Tested on simulated diaries** (about 60 things compared in each):
+- **Diaries with no triggers (80 of them):** nothing was ever labelled "strong".
+- **Diaries with planted triggers:**
+  - A strong same-day reaction (prawns → swelling) was found in every diary within 75 days.
+  - Delayed or partial ones took longer: dairy → itch over 2 days, and a weekly bartending shift → hands. These were found in 58–80% of diaries by 75 days and in 93–100% by 180 days.
+
+Meds and creams are left out, because they're used *because* of flares. Patterns are leads, not proof; the elimination test is the check.
 
 POEM (Patient-Oriented Eczema Measure) © The University of Nottingham.

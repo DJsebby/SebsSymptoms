@@ -11,9 +11,11 @@ import { POEM_QUESTIONS, POEM_OPTIONS, POEM_CREDIT, poemBand, poemSev } from './
 import { fetchWeatherDays, searchPlaces, roundCoord } from './weather.js';
 import { buildReport, reportFile } from './report.js';
 import { buildBackup, parseBackupZip } from './backup.js';
+import { createTriggers } from './triggers.js';
+import { analyze } from './insights.js';
 import { isLegacyBackup, openLegacyBackup } from './legacy-backup.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 const state = {
   tab: 'today',
@@ -24,6 +26,7 @@ const state = {
   settings: new Map(),
   weather: new Map(),
   trendRange: 14,
+  trigTarget: 'auto',
   photoFilter: 'all',
   updateWorker: null,
 };
@@ -128,9 +131,12 @@ const TABS = [
   ['today', 'Today', 'calendar'],
   ['photos', 'Photos', 'image'],
   ['trends', 'Trends', 'grid'],
+  ['triggers', 'Triggers', 'search'],
   ['products', 'Products', 'bottle'],
   ['settings', 'Settings', 'sliders'],
 ];
+
+const triggers = createTriggers({ state, setting, saveSetting, render, guard, go });
 
 function go(tab) { state.tab = tab; render(); window.scrollTo(0, 0); }
 
@@ -138,7 +144,7 @@ function render() {
   tabsEl.replaceChildren(...TABS.map(([id, label, ic]) =>
     h('button', { class: 'tab' + (state.tab === id ? ' active' : ''), 'aria-current': state.tab === id ? 'page' : null, onclick: () => go(id) },
       icon(ic), h('span', {}, label))));
-  const views = { today: viewToday, photos: viewPhotos, trends: viewTrends, products: viewProducts, settings: viewSettings };
+  const views = { today: viewToday, photos: viewPhotos, trends: viewTrends, triggers: triggers.view, products: viewProducts, settings: viewSettings };
   mainEl.replaceChildren(views[state.tab]());
 }
 
@@ -698,7 +704,7 @@ function viewTrends() {
       ? h('div', { class: 'card poem-list' }, poems.map(poemRow))
       : h('p', { class: 'empty' }, 'No weekly scores yet. It takes about a minute.'),
     h('button', { class: 'btn wide', onclick: startPoem }, icon('clipboard'), "Do this week's score"),
-    h('p', { class: 'small muted' }, "Pattern-finding (which foods, products or weather line up with flare-ups) comes in a later version, once there's enough data."));
+    h('button', { class: 'btn wide trends-trig', onclick: () => go('triggers') }, icon('search'), 'Which foods and products line up with flares?'));
 }
 
 // ---------- one day in detail (opened from a Trends square) ----------
@@ -860,7 +866,9 @@ function openReport() {
     const from = range === 'all' ? (firstDay < to ? firstDay : to) : addDays(to, -(range - 1));
     seg.replaceChildren(...[[30, '30 days'], [90, '90 days'], ['all', 'All time']].map(([v, label]) =>
       h('button', { class: 'seg-btn' + (range === v ? ' on' : ''), onclick: () => { range = v; state.reportRange = v; draw(); } }, label)));
-    current = { from, to, el: buildReport({ entries: state.entries, products: state.products, weather: state.weather, from, to, name: nameInput.value.trim(), photoImg }) };
+    const exclusions = setting('groupExclusions') || {};
+    const patterns = analyze({ entries: state.entries.filter(e => e.day >= from && e.day <= to), products: state.products, weather: state.weather, target: 'auto', exclusions });
+    current = { from, to, el: buildReport({ entries: state.entries, products: state.products, weather: state.weather, from, to, name: nameInput.value.trim(), photoImg, patterns, trials: setting('trials') || [], exclusions }) };
     preview.replaceChildren(current.el);
     prepareFile();
   }
@@ -1076,7 +1084,10 @@ async function openBackup() {
   try {
     await new Promise(r => setTimeout(r, 50)); // let the sheet appear before the work starts
     const photos = await db.getAll('photos');
-    const zip = buildBackup({ entries: state.entries, products: state.products, photos, weather: [...state.weather.values()], appVersion: APP_VERSION });
+    const zip = buildBackup({
+      entries: state.entries, products: state.products, photos, weather: [...state.weather.values()], appVersion: APP_VERSION,
+      settings: { trials: setting('trials') || [], groupExclusions: setting('groupExclusions') || {} },
+    });
     file = new File([zip], `SebsSymptoms-${dayKey()}-${timeKey().replace(':', '')}.zip`, { type: 'application/zip' });
     status.textContent = `Ready: ${fmtBytes(file.size)} (${state.entries.length} entries, ${photos.length} photos)`;
   } catch (err) {
@@ -1150,10 +1161,16 @@ function openRestore() {
         status.textContent = err.message;
         return;
       }
-      await db.replaceAll(data);
+      // Elimination tests and food-group corrections come back too (older backups have none).
+      const kept = [
+        { key: 'trials', value: Array.isArray(data.settings?.trials) ? data.settings.trials : [] },
+        { key: 'groupExclusions', value: data.settings?.groupExclusions && typeof data.settings.groupExclusions === 'object' ? data.settings.groupExclusions : {} },
+      ];
+      await db.replaceAll({ ...data, settings: kept });
       state.entries = data.entries;
       state.products = data.products;
       state.weather = new Map(data.weather.map(w => [w.day, w]));
+      for (const s of kept) state.settings.set(s.key, s.value);
       thumbURLs.clear();
       sheet.close(); render();
       const warn = data.missing.length ? ` (${data.missing.length} photo files were missing from the zip)` : '';
