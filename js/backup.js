@@ -45,7 +45,7 @@ function csvCell(v) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 // The leading BOM makes Excel read the file as UTF-8.
-const toCsv = rows => '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+const toCsv = rows => '\uFEFF' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 
 function entriesCsv(entries, fileFor) {
   const head = ['Date', 'Time', 'Type', 'Meal', 'Items', 'Note',

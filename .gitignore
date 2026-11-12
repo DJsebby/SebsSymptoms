@@ -5,6 +5,13 @@
 *.json.bak
 backup*/
 decrypted*/
+# Photos of the paper notebook (or anything else personal) must never reach this public repo.
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[hH][eE][iI][cC]
+*.[hH][eE][iI][fF]
+*.PNG
+notebook*/
 SebsSymptoms-*/
 .DS_Store
 node_modules/

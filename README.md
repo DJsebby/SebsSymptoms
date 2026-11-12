@@ -13,6 +13,7 @@ A private, offline diary for tracking eczema, sinus symptoms and their possible 
 - **Weather (optional).** Daily temperature, humidity, rain, UV and air quality (PM2.5) from Open-Meteo, for the past 2 months onwards.
 - **Specialist report.** One document for appointments covering a summary, most affected areas, the day-by-day grid, POEM, possible triggers and elimination tests, products with label photos, meds, activities, foods, weather, notes and photos. Print it, save it as a PDF, or share it as a file.
 - **Backups to Google Drive.** Two taps a day saves a normal .zip file containing spreadsheets and photos.
+- **Import your paper notebook.** Type earlier days into a spreadsheet (one row per day) or paste them, check a preview, and import. Those days then count in Trends, Triggers and the report. See [Importing a paper notebook](#importing-a-paper-notebook).
 
 ## Privacy model
 
@@ -87,6 +88,8 @@ python3 -m http.server 8000   # then open http://localhost:8000
 | `js/insights.js` | The trigger analysis (no DOM; testable on its own) and elimination-test summaries |
 | `js/foods.js` | Food-name matching and the food groups (dairy, wheat, eggs …) |
 | `js/triggers.js` | The Triggers tab |
+| `js/importer.js` | Reads a notebook spreadsheet (CSV) into diary entries (no DOM; testable on its own) |
+| `js/notebook.js` | The notebook-import card and sheets in Settings |
 | `js/poem.js` | POEM questions and severity bands |
 | `js/weather.js` | Open-Meteo weather, air quality and town search |
 | `js/report.js`, `css/report.css` | The specialist report |
@@ -94,8 +97,25 @@ python3 -m http.server 8000   # then open http://localhost:8000
 | `js/images.js` | Photo compression and metadata stripping |
 | `sw.js` | Offline caching |
 
-### Planned
-- Importing past paper-diary data (CSV)
+## Importing a paper notebook
+**Settings → Copy in your paper notebook.** "How to fill in the spreadsheet" gives you a template (CSV). Fill it in with Google Sheets, Numbers or Excel and save it as CSV, then choose **Import a spreadsheet**. You can also paste rows copied from a spreadsheet.
+
+| Column | What to put |
+|---|---|
+| Date | e.g. `14/08/2026` (day first; a file that can only be month first is read that way). Without a year, the most recent past date is used. |
+| Breakfast, Lunch, Dinner, Snacks, Drinks | Foods separated by commas. Or use one `Food` column for the whole day. |
+| Face, Neck, Right/Left arm, Right/Left inner elbow, Right/Left hand & wrist, Chest & stomach, Legs | `0`–`10`, or `mild` / `moderate` / `severe` (3 / 6 / 9), or `x` for a marked area with no number (5). `Hands`, `Elbows` and `Arms` columns fill both sides. |
+| Other areas | Anything outside the body map, e.g. `back 4` (saved as the check-in's note). |
+| Itch, Dry skin, Swelling, Sinus, Bad sleep, Stress | Same scores. Blank = not recorded; put `0` in any symptom column for a clear day. |
+| Antihistamine | `yes` / `no`, or the name of the one taken. |
+| Other meds & creams, Activities | Separated by commas. |
+| Note | The day's note. |
+
+Optional: separate start- and end-of-day check-ins (add "(start)" or "(end)" to a symptom column, e.g. `Face (start)`, with `Start time` / `End time`), and meal times (`Breakfast time`, `Lunch time` …, e.g. `7:30pm`). A day can take several rows, e.g. one per snack.
+
+Columns are matched by name (common variations are recognised) and unknown columns are listed and ignored. Each day becomes ordinary entries, tagged "notebook": an end-of-day check-in at 21:00, meals at fixed times (breakfast 08:00, lunch 12:30, snack 15:30, dinner 19:00), meds at 08:00, activities at 17:00 and the note. Importing the same days again replaces them, so mistakes can be fixed and re-imported. Settings can also remove the whole import.
+
+Keep photos of notebook pages and filled-in spreadsheets **out of this repo**. It's public; `.gitignore` blocks `.csv` files and photos as a safety net.
 
 ## How the trigger analysis works
 Everything runs on the phone. For each food, food group, activity and product:

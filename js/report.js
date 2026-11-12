@@ -76,6 +76,13 @@ function itemDays(entries, type) {
   return [...m.values()].sort((a, b) => b.days.size - a.days.size || a.label.localeCompare(b.label));
 }
 
+// Days copied in from the paper notebook (one end-of-day check-in each) are pointed out.
+function notebookNote(E) {
+  const days = [...new Set(E.filter(e => e.source === 'notebook').map(e => e.day))].sort();
+  if (!days.length) return null;
+  return h('p', { class: 'note' }, `${days.length} day${days.length === 1 ? '' : 's'} (${fmt(days[0])} – ${fmt(days.at(-1))}) were copied from an earlier paper notebook, with one end-of-day check-in each; areas marked without a number were entered as 5.`);
+}
+
 // photoImg(id, full, cls) must return an <img data-photo-id=…> (the app fills in the picture).
 // patterns: analyze() run on this period (optional); trials: elimination tests.
 export function buildReport({ entries, products, weather, from, to, name, photoImg, patterns = null, trials = [], exclusions = {} }) {
@@ -146,7 +153,8 @@ export function buildReport({ entries, products, weather, from, to, name, photoI
     h('header', { class: 'rpt-head' },
       h('h1', {}, 'Skin & allergy diary'),
       h('p', { class: 'rpt-sub' }, (name ? name + ' · ' : '') + `${fmt(from)} – ${fmt(to)} (${days.length} days)`),
-      h('p', { class: 'note' }, `Prepared ${fmt(dayKey())} from a daily diary kept by the patient. Symptom scores are self-rated from 1 (barely there) to 10 (worst); a blank area on a check-in day means no symptoms there.`)),
+      h('p', { class: 'note' }, `Prepared ${fmt(dayKey())} from a daily diary kept by the patient. Symptom scores are self-rated from 1 (barely there) to 10 (worst); a blank area on a check-in day means no symptoms there.`),
+      notebookNote(E)),
 
     section('Summary', h('div', { class: 'stats' },
       stat(`${checkDays.length} / ${days.length}`, 'days with a symptom check-in'),

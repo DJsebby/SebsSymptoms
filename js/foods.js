@@ -3,7 +3,7 @@
 // the app (Triggers → the group → tap the food).
 
 // "Crème Fraîche " → "creme fraiche"
-export const normKey = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+export const normKey = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Simple plurals ("eggs" → "egg", "berries" → "berry") are merged, but only when the
@@ -40,7 +40,7 @@ export const FOOD_GROUPS = [
     'pecorino', 'mozzarella', 'cheddar', 'feta', 'brie', 'camembert', 'ricotta', 'mascarpone', 'hall?oumi', 'paneer', 'gouda', 'labneh',
     'quark', 'burrata', 'gruyere', 'emmental', 'bocconcini', 'raita', 'tzatziki', 'alfredo', 'carbonara', 'bechamel', 'mornay', 'queso',
     'pizzas?', 'lasagnes?', 'lasagnas?', 'cheesecakes?', 'tiramisu', 'panna cotta', 'creme brulee', 'creme fraiche', 'sour cream',
-    'butter chicken', 'korma', 'cheeseburgers?', 'mac (?:and|n|&) cheese', 'milk chocolate', 'white chocolate', 'parmi', 'parmigiana', 'quiches?',
+    'butter chicken', 'korma', 'cheeseburgers?', 'condensed milk', 'viet(?:namese)? ic(?:e|ed) coffees?', 'mac (?:and|n|&) cheese', 'milk chocolate', 'white chocolate', 'parmi', 'parmigiana', 'quiches?',
   ], [
     `${PLANT}[\\s-]+${MILKY}`, 'peanut butter', 'almond butter', 'nut butter', 'cashew butter', 'cocoa butter', 'shea butter',
     'apple butter', 'butter beans?', 'cream of tartar', 'cream soda', 'dairy[- ]free', 'non[- ]dairy', 'vegan',
@@ -48,7 +48,7 @@ export const FOOD_GROUPS = [
   group('wheat', 'Wheat & gluten', 'bread, pasta, noodles, cereal, pastry, cakes, beer and anything crumbed or battered', [
     'breads?', 'breadcrumbs?', 'toast', 'toasts', 'toasties?', 'sandwich(?:es)?', 'sangas?', 'buns?', 'bread rolls?', 'burgers?', 'wraps?',
     'pitt?as?', 'naans?', 'rotis?', 'chapatis?', 'parathas?', 'flatbreads?', 'focaccia', 'ciabatta', 'baguettes?', 'sourdough', 'bagels?',
-    'hamburgers?', 'cheeseburgers?', 'croissants?', 'pastry', 'pastries', 'danish', 'muffins?', 'crumpets?', 'pancakes?', 'pikelets?', 'waffles?', 'crepes?', 'scones?',
+    'hamburgers?', 'cheeseburgers?', 'pumpernickel', 'bolani', 'curry puffs?', 'croissants?', 'pastry', 'pastries', 'danish', 'muffins?', 'crumpets?', 'pancakes?', 'pikelets?', 'waffles?', 'crepes?', 'scones?',
     'biscuits?', 'cookies?', 'crackers?', 'cakes?', 'cupcakes?', 'brownies?', 'donuts?', 'doughnuts?', 'pies?', 'sausage rolls?',
     'pasties?', 'quiches?', 'pizzas?', 'pasta', 'pastas', 'spaghetti', 'penne', 'fusilli', 'linguine', 'fettuccine', 'macaroni',
     'mac (?:and|n|&) cheese', 'lasagnes?', 'lasagnas?', 'ravioli', 'tortellini', 'gnocchi', 'noodles?', 'ramen', 'udon', 'soba',
@@ -121,6 +121,7 @@ export const FOOD_GROUPS = [
     'salami', 'pepperoni', 'chorizo', 'prosciutto', 'pancetta', 'bacon', 'ham', 'pastrami', 'jamon', 'sopressa', 'cured meats?',
     'deli meats?', 'hot dogs?', 'frankfurts?', 'frankfurters?', 'kabana', 'cabanossi', 'smoked salmon', 'kimchi', 'sauerkraut',
     'kombucha', 'pickles?', 'pickled', 'miso', 'blue cheese', 'aged cheese', 'parmesan', 'parmigiano', 'red wine', 'soy sauce',
+    'leftovers?', 'bismarck herring', 'rollmops?',
   ]),
 ];
 

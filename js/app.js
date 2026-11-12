@@ -12,10 +12,11 @@ import { fetchWeatherDays, searchPlaces, roundCoord } from './weather.js';
 import { buildReport, reportFile } from './report.js';
 import { buildBackup, parseBackupZip } from './backup.js';
 import { createTriggers } from './triggers.js';
+import { createNotebookImport } from './notebook.js';
 import { analyze } from './insights.js';
 import { isLegacyBackup, openLegacyBackup } from './legacy-backup.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 const state = {
   tab: 'today',
@@ -137,6 +138,7 @@ const TABS = [
 ];
 
 const triggers = createTriggers({ state, setting, saveSetting, render, guard, go });
+const notebook = createNotebookImport({ state, render, guard, pickFile, shareFile });
 
 function go(tab) { state.tab = tab; render(); window.scrollTo(0, 0); }
 
@@ -255,7 +257,9 @@ function entryRow(e) {
   return h('button', { class: 'entry', onclick: () => openEntry(e) },
     h('span', { class: 'entry-time' }, e.time),
     e.type === 'photo' ? thumb(e.photoId, 'entry-thumb') : h('span', { class: 'entry-icon t-' + e.type }, icon(meta.icon)),
-    h('span', { class: 'entry-main' }, h('span', { class: 'entry-title' }, title), h('span', { class: 'entry-sub' }, summarize(e))),
+    h('span', { class: 'entry-main' },
+      h('span', { class: 'entry-title' }, title, e.source === 'notebook' ? h('span', { class: 'tag' }, 'notebook') : null),
+      h('span', { class: 'entry-sub' }, summarize(e))),
     e.type === 'symptoms' ? h('span', { class: 'badge sev-' + worst + (worst ? '' : ' zero') }, worst ? String(worst) : '0')
       : e.type === 'poem' ? h('span', { class: 'badge sev-' + poemSev(e.score) }, String(e.score)) : null);
 }
@@ -810,6 +814,15 @@ function openPoem(entry, isNew) {
 
 // ---------- specialist report ----------
 
+// Share sheet where available (Save to Files, Drive …), otherwise a download.
+async function shareFile(file) {
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); } catch (err) { if (err.name !== 'AbortError') throw err; }
+  } else {
+    downloadFile(file);
+  }
+}
+
 function downloadFile(file) {
   const href = URL.createObjectURL(file);
   const a = h('a', { href, download: file.name, class: 'visually-hidden' });
@@ -1036,6 +1049,8 @@ function viewSettings() {
       h('div', { class: 'stack' },
         h('button', { class: 'btn primary wide', onclick: openBackup }, 'Back up now'),
         h('button', { class: 'btn wide', onclick: openRestore }, 'Restore from a backup'))),
+
+    notebook.card(),
 
     weatherSettingsCard(),
 
